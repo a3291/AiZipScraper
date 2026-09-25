@@ -1,10 +1,7 @@
-"""cli.py — command-line orchestrator.
+"""cli.py — command-line entry: scan / show / check / export.
 
-What I am: the dispatch entry for the scan batch pipeline and the read-only
-show/check/export commands.
-My interface: the four subcommands scan/show/check/export (--help for details);
-outputs: runs/<run_id>/ archives and a <name>.publish.json sidecar next to each
-target.
+scan writes runs/<run_id>/ archives and a <name>.publish.json sidecar next to
+each target; show/check/export are read-only.
 """
 from __future__ import annotations
 
@@ -251,10 +248,7 @@ def cmd_scan(args) -> int:
     _save(cl, run_dir)
 
     try:
-        # cached must be decided before extraction/identification — identification
-        # writes sidecars; deciding afterwards would count targets this very run
-        # just published as cached; cached targets are recorded skipped and summed
-        # up by run_logger
+        # cached decided before work; cached targets are recorded skipped and summed up by run_logger
         cached_set = {t for t in targets
                       if not args.force
                       and Path(str(t) + ".publish.json").exists()}

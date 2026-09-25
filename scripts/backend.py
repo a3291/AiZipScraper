@@ -1,10 +1,5 @@
-"""backend.py — AI server/API connection layer (separated from session logic).
-
-OpenAI-compatible protocol: /models probing and model resolution,
-/chat/completions requests.
-Default backend LM Studio; any OpenAI-compatible endpoint works
-(Ollama /v1, vLLM, llama.cpp server).
-"""
+"""backend.py — AI server/API connection: /models probe, model resolution,
+/chat/completions requests (OpenAI-compatible protocol)."""
 from __future__ import annotations
 
 import json

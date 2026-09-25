@@ -1,7 +1,4 @@
-"""schema.py — sidecar contract single source: category enum, low-confidence threshold, validation.
-
-Field names are English (machine-friendly).
-"""
+"""schema.py — sidecar contract: category enum, low-confidence threshold, validation."""
 from __future__ import annotations
 
 CATEGORIES = ["dataset", "media", "software", "documents", "mixed", "unknown"]

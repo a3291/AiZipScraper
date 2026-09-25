@@ -1,11 +1,9 @@
 """ai_identify.py — recognition session engine.
 
-What I am: per-turn session logic with the AI backend (connection logic lives
-in backend.py).
-My interface: run_session(context_pkg, prompts, cfg, mlog, hint_exts)
+run_session(context_pkg, prompts, cfg, mlog, hint_exts)
   → (identity, confidence, warnings, stats); appends to messages.json per turn.
 Guardrails: max_turns, one invalid-JSON tolerance, page stall → forced publish,
-2 more page turns after force → degrade; every failure path degrades to unknown.
+2 more page turns after force → degrade.
 """
 from __future__ import annotations
 
@@ -34,7 +32,7 @@ def datetime_now_iso() -> str:
 
 
 def load_config(path: str | None = None) -> dict:
-    """Read jsons/scraper.json — the single source of config truth; missing keys raise (no silent defaults)."""
+    """Read jsons/scraper.json; missing keys raise (no silent defaults)."""
     p = Path(path) if path else JSONS / "scraper.json"
     try:
         raw = json.loads(p.read_text(encoding="utf-8-sig"))
@@ -116,7 +114,7 @@ def _estimate_tokens(messages: list[dict]) -> int:
 # ---------- messages.json (organized per message, atomic rewrite per turn) ----------
 
 class MessageLog:
-    """The file is the truth: locked read-merge-atomic-write on append; supports concurrent api instances."""
+    """Appends re-read, merge and atomically rewrite messages.json under a lock; safe for concurrent instances."""
 
     _lock = threading.Lock()   # class-level lock
 
@@ -155,7 +153,7 @@ class MessageLog:
 
 def _say(messages: list[dict], mlog: "MessageLog", R: dict, P: dict,
          key: str, text: str | None = None) -> None:
-    """Append one prompt message to the session and mirror it into messages.json (single point of dual write)."""
+    """Append one prompt message to the session and mirror it into messages.json."""
     role = R[key]
     content = text if text is not None else P[key]
     messages.append({"role": role, "content": content})

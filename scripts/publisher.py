@@ -1,9 +1,7 @@
-"""publisher.py — publisher: publish.json template → fill → validate → <name>.publish.json.
+"""publisher.py — publish.json template → fill → validate → <name>.publish.json.
 
-Legitimacy gate: the sidecar has exactly one generation path and always passes
-schema validation; invalid output never hits disk.
-The program fills <A_*> (anchoring/structure/stats), the AI fills <I_*>
-(identity/confidence).
+The program fills <A_*> (anchoring/structure), the AI fills <I_*>
+(identity/confidence); validation failure writes nothing.
 """
 from __future__ import annotations
 

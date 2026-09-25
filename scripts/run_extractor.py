@@ -8,8 +8,7 @@ Usage: uv run python scripts/run_extractor.py <extractor name> <in path> <out di
 Contract:
   1. The extractor script exposes extract(in_path, out_dir) -> dict.
   2. The result dict must contain every key in RESULT_REQUIRED_KEYS with correct
-     types — validated at the source; on violation exit code 3 and _result.json
-     is never written (downstream trusts what it receives).
+     types; on violation exit code 3 and _result.json is not written.
   3. After validation passes, <out dir>/_result.json is written for the caller.
   4. Heartbeat: <out dir>/_heartbeat.json (pid/started_at) written at start and
      removed on success; a leftover file means the extractor hung mid-run, for

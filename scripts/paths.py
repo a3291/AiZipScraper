@@ -1,4 +1,4 @@
-"""paths.py — single source of project paths (anchored to the project root, CWD-independent)."""
+"""paths.py — project path constants (anchored to the project root, CWD-independent)."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent

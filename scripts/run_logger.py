@@ -1,8 +1,6 @@
 """run_logger.py — run log summarizer: prints one full run report when a run ends.
 
-Input comes entirely from files on disk in the run directory (checklist.json /
-context.json / messages.json) plus the sidecars themselves; no dependency on
-cli's in-memory state:
+Input comes from run-directory files:
   - checklist.json  → run_id, status, concurrency, per-target extract/ai/publish
                       phases and stats
   - context.json    → actual page count per package
