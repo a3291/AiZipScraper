@@ -15,9 +15,12 @@ Inspired by media library scrapers (like Plex): no unnamed archive black holes �
 
 ## Production–consumption pipeline
 
-Six rings plus a static contract layer. Each ring eats the previous ring's
-on-disk artifacts and writes files; `cli.py` is the orchestrator and the only
-file importing across rings — ring scripts never import each other.
+Six rings plus a static contract layer. Ring boundaries are files where it
+matters (targets → extracted/ + _result.json → sidecar); rings 3–5 run
+in-process under `cli.py`, handing dicts in memory — the runs/ JSON files
+(context.json, messages.json, checklist.json) are archives written alongside,
+so ring 6 can replay any run standalone. `cli.py` is the orchestrator and the
+only file importing across rings — ring scripts never import each other.
 
 ```
 static contract layer   jsons/scraper.json · prompt.json · publish.json
@@ -32,8 +35,8 @@ main.py ──> cli.py
           │                 (extractor reads its own password.json; heartbeat
           │                  file written at start, removed on success)
   ring 3  context_builder   eats extracted/ only (underscore-prefixed files skipped)
-          │                 → merged into runs/<id>/context.json
-  ring 4  ai_identify       eats context.json + prompt.json + scraper.json
+          │                 → context dict; archived into runs/<id>/context.json
+  ring 4  ai_identify       eats the ring-3 context dict + prompt.json + scraper.json
           │   └ backend.py  → runs/<id>/messages.json (appended atomically per turn)
           │                   + identity dict
   ring 5  publisher         eats program fields + identity + publish.json template
@@ -45,8 +48,10 @@ main.py ──> cli.py
 ```
 
 Rings 1–2 run as a worker pool, then rings 3–5 run per target after the pool
-joins; ring 6 is read-only. `extractors/` never imports project modules and
-never reads `jsons/`; extractor directories are swapped in and out whole.
+joins, handing dicts in memory (the runs/ files are archives for ring 6 and
+standalone replay); ring 6 is read-only. `extractors/` never imports project
+modules and never reads `jsons/`; extractor directories are swapped in and
+out whole.
 
 ## Installation
 
@@ -94,7 +99,6 @@ uv run python scripts/run_logger.py <run_id>
 {
   "concurrency": 4,
   "ai": {
-    "provider": "lmstudio",
     "base_url": "http://localhost:1234/v1",
     "model": "",
     "api_key": "lm-studio",
@@ -116,7 +120,6 @@ uv run python scripts/run_logger.py <run_id>
 | Key | Meaning |
 |-----|---------|
 | `concurrency` | one value governs both the extract pool and the identify pool (they never overlap; `--workers` overrides per run) |
-| `ai.provider` | label kept for reference; endpoint behavior comes from `ai.base_url` or auto-identification |
 | `ai.base_url` | empty → auto-probe: LM Studio native `/api/v1/chat` → LM Studio `/v1/chat/completions` → Ollama `/v1/chat/completions` (first passing reachability + a minimal session wins); a non-empty value is used as-is. Request style follows the URL: full path ending in `/chat` sends the native `{model, input}` body; `/chat/completions` or a bare base (e.g. `/v1`) sends the messages array |
 | `ai.model` | leave empty to auto-pick the first loaded model on the backend |
 | `ai.page_chars` | target page size in characters |
@@ -147,6 +150,9 @@ Prompts live in `jsons/prompt.json`; the sidecar template in `jsons/publish.json
 
 - full path ending in `/chat` (LM Studio native) → `{"model", "input": [{"type": "text", "content": …}]}`; the whole conversation (system, first prompt, delivered pages, assistant replies) is rendered into one text with `[role]` labels
 - otherwise (OpenAI-compatible) → `{"model", "messages": […], "temperature", "stream": false, "response_format": {"type": "json_schema", "json_schema": …}}` with the publish contract as the schema
+
+`temperature` applies in OpenAI-compatible mode only; the native body carries
+only `model` and `input`.
 
 **Responses** in either shape — OpenAI `choices[0].message.content` or the
 native `output[]` message list — are normalized to the same extracted text;

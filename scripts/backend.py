@@ -1,4 +1,4 @@
-"""backend.py — AI server/API connection: endpoint auto-identification,
+"""backend.py — AI server/API connection: endpoint resolution (once per run),
 model resolution, chat turns (OpenAI messages style and LM Studio native style)."""
 from __future__ import annotations
 
@@ -121,10 +121,12 @@ def _try_endpoint(endpoint: str, model: str, api_key: str,
     return (endpoint, model) if _extract_content(js) is not None else None
 
 
-def endpoint_available(cfg: dict) -> bool:
-    """Resolve endpoint/model in place. Empty base_url → probe candidates;
-    explicit base_url → check its /models. Fills cfg['base_url'], cfg['mode'],
-    and cfg['model'] when it was empty."""
+def resolve_endpoint(cfg: dict) -> bool:
+    """Resolve endpoint/mode/model in place — call once per run before the
+    session pool. Empty base_url → probe CANDIDATE_ENDPOINTS in order; the
+    first candidate passing reachability + a minimal session wins. Explicit
+    base_url → used as-is. Fills cfg['base_url'], cfg['mode'], and cfg['model']
+    when it was empty. Returns True when the endpoint is usable."""
     api_key = cfg.get("api_key", "")
     timeout = min(int(cfg.get("timeout", 30)), 30)
     if not cfg.get("base_url"):
@@ -139,7 +141,22 @@ def endpoint_available(cfg: dict) -> bool:
         return False
     cfg["mode"] = endpoint_mode(cfg["base_url"])
     try:
-        _get(_models_url(cfg["base_url"]), 3, api_key)
+        data = _get(_models_url(cfg["base_url"]), 3, api_key).get("data") or []
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not data:
+        return False
+    if not cfg.get("model"):
+        cfg["model"] = data[0]["id"]
+    return True
+
+
+def endpoint_available(cfg: dict) -> bool:
+    """Pure reachability check (no mutation): needs a base_url, GET /models answers."""
+    if not cfg.get("base_url"):
+        return False
+    try:
+        _get(_models_url(cfg["base_url"]), 3, cfg.get("api_key", ""))
         return True
     except (OSError, json.JSONDecodeError):
         return False

@@ -1,7 +1,6 @@
 {
   "concurrency": 4,
   "ai": {
-    "provider": "lmstudio",
     "base_url": "http://localhost:1234/v1",
     "model": "",
     "api_key": "lm-studio",

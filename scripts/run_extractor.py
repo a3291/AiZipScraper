@@ -8,7 +8,8 @@ Usage: uv run python scripts/run_extractor.py <extractor name> <in path> <out di
 Contract:
   1. The extractor script exposes extract(in_path, out_dir) -> dict.
   2. The result dict must contain every key in RESULT_REQUIRED_KEYS with correct
-     types; on violation exit code 3 and _result.json is not written.
+     types, and result["structure"] every key in STRUCTURE_REQUIRED_KEYS;
+     on violation exit code 3 and _result.json is not written.
   3. After validation passes, <out dir>/_result.json is written for the caller.
   4. Heartbeat: <out dir>/_heartbeat.json (pid/started_at) written at start and
      removed on success; a leftover file means the extractor hung mid-run, for
@@ -37,6 +38,14 @@ RESULT_REQUIRED_KEYS = {
     "warnings": list, "files_kept": int,
 }
 
+# inner keys of the structure dict (consumed by cli/publisher)
+STRUCTURE_REQUIRED_KEYS = {
+    "entry_count": int, "dir_count": int, "total_uncompressed": int,
+    "top_extensions": dict, "top_level_dirs": list, "notable_files": list,
+    "password_protected": bool, "multi_part": bool,
+    "nested_archives": list, "exe_present": bool, "macro_docs": bool,
+}
+
 
 def _validate_result(result) -> str | None:
     """Validate the extractor result contract; returns an error description or None."""
@@ -47,6 +56,13 @@ def _validate_result(result) -> str | None:
             return f"missing required key: {key}"
         if not isinstance(result[key], typ):
             return f"result key {key} should be {typ.__name__}, got {type(result[key]).__name__}"
+    structure = result["structure"]
+    for key, typ in STRUCTURE_REQUIRED_KEYS.items():
+        if key not in structure:
+            return f"missing required structure key: {key}"
+        if not isinstance(structure[key], typ):
+            return (f"structure key {key} should be {typ.__name__}, "
+                    f"got {type(structure[key]).__name__}")
     return None
 
 

@@ -37,7 +37,15 @@ def _coerce(value: str, ph: str):
 
 def fill(template: dict, program: dict, identity: dict,
          warnings: list[str]) -> dict:
-    """Fill the template. program holds program-side fields, identity the AI-side identity."""
+    """Fill the template.
+
+    program keys: sha256, source_path, file_size, mtime, scraped_at, engine,
+    depth, structure (entry_count, dir_count, total_uncompressed,
+    top_extensions, top_level_dirs, notable_files), flags — built by cli from
+    the extraction result. identity keys: title, category, summary, tags,
+    language, confidence, plus schema.FALLBACK_KEY when degraded (copied to
+    the document, absent otherwise).
+    """
     ctx = {
         "A_SHA256": program["sha256"],
         "A_SOURCE_PATH": program["source_path"],
@@ -75,7 +83,9 @@ def fill(template: dict, program: dict, identity: dict,
         return node
 
     doc = fill_node(template["fields"])
-    doc["_fallback_reason"] = identity.get("_fallback_reason")
+    reason = identity.get(schema.FALLBACK_KEY)
+    if reason:
+        doc[schema.FALLBACK_KEY] = reason
     return doc
 
 

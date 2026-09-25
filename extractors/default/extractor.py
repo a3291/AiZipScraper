@@ -8,6 +8,8 @@ in this directory ({"passwords": ["...", ...]}).
 Behavior is fixed in this script (not wired to config): archives (zip/7z) are
 fully extracted with original files preserved; plain files are copied as-is;
 sandboxed against path escape; zip-bomb guardrails (total size / entry caps).
+Structure flags (exe_present, macro_docs, nested_archives from the entry list;
+multi_part from the input file name) are computed here.
 Loaded and executed by scripts/run_extractor.py; the result dict lands in
 _result.json via the runner.
 The downstream context packer reads only the out dir, decoupled from this dict.
@@ -34,6 +36,9 @@ except ImportError:
 HERE = Path(__file__).resolve().parent
 ARCHIVE_EXTS = {".zip", ".7z"}
 NOTABLE_NAME_RE = re.compile(r"(readme|说明|index|manifest|license|changelog)", re.I)
+EXE_EXTS = {".exe", ".com", ".msi", ".bat", ".cmd", ".scr"}
+MACRO_DOC_EXTS = {".docm", ".dotm", ".xlsm", ".xlam", ".pptm", ".ppsm"}
+SPLIT_VOLUME_RE = re.compile(r"\.(zip|7z)\.\d{1,4}$|\.part\d+\.rar$|\.r\d+$", re.I)
 
 # guardrails fixed in-script (not wired to config)
 MAX_TOTAL_UNCOMPRESSED = 4 * 1024 ** 3   # total uncompressed cap: 4GB
@@ -98,8 +103,12 @@ def _stats_from_names(names: list[str], total_uncompressed: int,
         "top_level_dirs": sorted(top)[:50],
         "notable_files": [n for n in files
                           if NOTABLE_NAME_RE.search(os.path.basename(n))][:20],
-        "file_list": files[:20000],
         "password_protected": password_protected,
+        "nested_archives": [n for n in files
+                            if os.path.splitext(n)[1].lower() in ARCHIVE_EXTS][:20],
+        "exe_present": any(os.path.splitext(n)[1].lower() in EXE_EXTS for n in files),
+        "macro_docs": any(os.path.splitext(n)[1].lower() in MACRO_DOC_EXTS for n in files),
+        "file_list": files[:20000],
     }
 
 
@@ -191,6 +200,7 @@ def extract(path: str, out_dir: str | Path,
             shutil.copy2(path, dest)
         st = _stats_from_names([os.path.basename(path)],
                                os.path.getsize(path), False)
+        st["multi_part"] = bool(SPLIT_VOLUME_RE.search(os.path.basename(path)))
         return {"entry_id": sha[:8], "kind": "file", "sha256": sha,
                 "structure": st, "password_found": False,
                 "warnings": log, "files_kept": 1}
@@ -202,6 +212,7 @@ def extract(path: str, out_dir: str | Path,
         if py7zr is None:
             raise RuntimeError("py7zr not installed; cannot handle 7z")
         st = _list_7z(path, log)
+    st["multi_part"] = bool(SPLIT_VOLUME_RE.search(os.path.basename(path)))
 
     if st["entry_count"] > MAX_ENTRIES:
         raise ValueError(f"entry count {st['entry_count']} exceeds cap {MAX_ENTRIES}; refusing to extract")

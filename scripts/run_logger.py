@@ -60,7 +60,7 @@ def run_report(run_dir: Path) -> str:
         phase = pb.get("phase") or ai.get("phase") or ex.get("phase") or "pending"
         counters[phase] = counters.get(phase, 0) + 1
 
-        entry = (ex.get("dir") or "extracted/").split("/")[-1]
+        entry = ex.get("entry_id", "")
         pages_real = len(ctx.get(entry, {}).get("pages", []))
         msgs_real = len(msgs.get(entry, {}).get("messages", []))
         st = pkg.get("stats", {})

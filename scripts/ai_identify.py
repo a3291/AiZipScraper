@@ -2,6 +2,10 @@
 
 run_session(context_pkg, prompts, cfg, mlog, hint_exts)
   → (identity, confidence, warnings, stats); appends to messages.json per turn.
+  context_pkg shape (from context_builder.build): pages [{no, chars, text}],
+  tail_page {no, text}, stats.page_count.
+  identity always carries "confidence"; a degraded identity carries
+  schema.FALLBACK_KEY and stats["published"] = False.
 Guardrails: max_turns cap (negative = unlimited), one invalid-JSON tolerance,
 page stall → forced publish, 2 more page turns after force → degrade.
 """
@@ -11,7 +15,6 @@ import json
 import os
 import re
 import threading
-from datetime import datetime
 from pathlib import Path
 
 import backend
@@ -22,13 +25,12 @@ CATEGORIES = schema.CATEGORIES
 LOW_CONFIDENCE = schema.LOW_CONFIDENCE
 JSONS = paths.JSONS
 
-REQUIRED_AI_KEYS = ["provider", "base_url", "model", "api_key", "temperature",
-                    "timeout", "page_chars", "remind_at", "force_publish_at",
-                    "max_turns"]
+REQUIRED_AI_KEYS = ["base_url", "model", "api_key", "temperature", "timeout",
+                    "page_chars", "remind_at", "force_publish_at", "max_turns"]
 
-
-def datetime_now_iso() -> str:
-    return datetime.now().astimezone().isoformat()
+REQUIRED_PROMPT_KEYS = ["system", "first", "remind", "force_publish",
+                        "bad_json_retry", "force_publish_only", "dup_page",
+                        "stall_to_publish", "page_deliver"]
 
 
 def load_config(path: str | None = None) -> dict:
@@ -48,9 +50,22 @@ def load_config(path: str | None = None) -> dict:
     if not isinstance(conc, int) or conc < 1:
         raise ValueError(f"scraper.json concurrency must be a positive integer (got: {conc!r})")
 
+    limits = raw.get("limits")
+    if not isinstance(limits, dict):
+        raise ValueError(f"scraper.json limits must be an object (got: {limits!r})")
+    ets = limits.get("extract_timeout_s")
+    if not isinstance(ets, int) or ets < 1:
+        raise ValueError("scraper.json limits.extract_timeout_s must be a positive integer")
+    mtb = limits.get("max_text_file_bytes")
+    if not isinstance(mtb, int) or mtb < 1:
+        raise ValueError("scraper.json limits.max_text_file_bytes must be a positive integer")
+    ratio = limits.get("sentence_max_ratio")
+    if not isinstance(ratio, (int, float)) or not 0 < ratio <= 1:
+        raise ValueError("scraper.json limits.sentence_max_ratio must be in (0, 1]")
+
     cfg = dict(ai)
     cfg["concurrency"] = conc
-    cfg["limits"] = dict(raw.get("limits") or {})
+    cfg["limits"] = dict(limits)
     return cfg
 
 
@@ -71,6 +86,9 @@ def load_prompts(path: str | None = None) -> dict:
         raise ValueError(f"prompt.json category enum {enum} does not match "
                          f"schema.CATEGORIES {schema.CATEGORIES}")
     prompts = {k: v["text"] for k, v in data["prompts"].items()}
+    missing = [k for k in REQUIRED_PROMPT_KEYS if k not in prompts]
+    if missing:
+        raise ValueError(f"prompt.json missing prompt keys: {missing} (file {p})")
     roles = {k: v.get("role", "user") for k, v in data["prompts"].items()}
     return {"contract": contract, "prompts": prompts, "roles": roles}
 
@@ -164,9 +182,10 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
     """Single-package recognition session. Returns (identity, confidence, warnings, stats)."""
     warnings: list[str] = []
     stats = {"pages": context_pkg["stats"]["page_count"], "pages_read": 0,
-             "turns": 0, "tokens_in": 0, "tokens_out": 0}
+             "turns": 0, "tokens_in": 0, "tokens_out": 0, "published": True}
 
     def bail(reason: str):
+        stats["published"] = False
         return _fallback(reason), 0.0, warnings, stats
 
     if not backend.endpoint_available(cfg):
@@ -242,6 +261,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
             if not isinstance(ident, dict):
                 return bail("publish missing identity object")
             identity, conf, vw = _validate_identity(ident)
+            identity["confidence"] = conf
             warnings.extend(vw)
             return identity, conf, warnings, stats
 
@@ -296,4 +316,4 @@ def _validate_identity(out: dict) -> tuple[dict, float, list[str]]:
 
 def _fallback(reason: str) -> dict:
     return {"title": "", "category": "unknown", "summary": "", "tags": [],
-            "language": [], "_fallback_reason": reason}
+            "language": [], "confidence": 0.0, schema.FALLBACK_KEY: reason}

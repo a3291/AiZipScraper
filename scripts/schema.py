@@ -5,6 +5,9 @@ CATEGORIES = ["dataset", "media", "software", "documents", "mixed", "unknown"]
 
 LOW_CONFIDENCE = 0.6   # below this, mark "manual review recommended" in warnings/reports
 
+# degraded-identity marker carried in identity dicts and in sidecar documents
+FALLBACK_KEY = "_fallback_reason"
+
 
 def validate(doc: dict) -> list[str]:
     """Validate a sidecar document; returns a list of problems (empty = valid)."""
@@ -56,5 +59,8 @@ def validate(doc: dict) -> list[str]:
         problems.append("warnings should be an array")
     if not isinstance(doc.get("structure"), dict):
         problems.append("structure missing or not an object")
+    fb = doc.get(FALLBACK_KEY)
+    if fb is not None and not isinstance(fb, str):
+        problems.append(f"{FALLBACK_KEY} should be a string when present")
 
     return problems

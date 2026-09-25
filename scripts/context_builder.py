@@ -81,7 +81,12 @@ def _tail_page(blocks: list[dict]) -> str:
 def build(extracted_dir: str | Path, page_chars: int,
           max_text_file_bytes: int = 33554432,
           sentence_max_ratio: float = 0.1) -> dict:
-    """Main entry: extracted/ → context dict (for serialization into context.json)."""
+    """Main entry: extracted/ → context dict (for serialization into context.json).
+
+    Return shape: {version, page_chars, pages: [{no, chars, text}],
+    tail_page: {no, chars, text}, files_index, stats: {sentences_skipped,
+    page_count, file_count}} — the in-memory handover to the session engine.
+    """
     blocks = read_text_blocks(extracted_dir, max_text_file_bytes)
     tail = _tail_page(blocks)
 
