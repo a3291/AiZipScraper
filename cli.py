@@ -1,7 +1,7 @@
 """cli.py — 刮削器命令行入口。
 
 子命令：
-  scan    批量刮削（默认 listing+sample 深度）
+  scan    批量刮削（默认 listing+sample 深度；每次运行落 runs/<run_id>/ 账本与 AI 留痕）
   show    中文映射展示侧车内容
   check   体检：孤儿侧车 / 哈希不匹配 / 低置信
   export  汇总导出 JSONL
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,9 @@ from ai_identify import identify, load_config, LOW_CONFIDENCE
 from schema import SCHEMA_VERSION, validate
 
 ARCHIVE_EXTS = {".zip", ".7z"}
+
+RUNS_DIR = Path("runs")
+REDO_PHASES = {"pending", "extracted", "failed"}   # resume 时需要重做的 phase
 
 SHOW_ZH = {
     "schema_version": "契约版本",
@@ -53,10 +57,70 @@ def load_passwords(pwfile: str | None) -> list[str]:
     return [ln for ln in (ln.strip() for ln in lines) if ln]
 
 
+# ---------- run checklist（断点续跑账本） ----------
+
+def _atomic_write_json(path: Path, obj: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def new_run_dir() -> Path:
+    """创建 runs/<run_id>/ 目录，run_id 冲突时追加序号。"""
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = RUNS_DIR / run_id
+    n = 2
+    while run_dir.exists():
+        run_dir = RUNS_DIR / f"{run_id}-{n}"
+        n += 1
+    run_dir.mkdir(parents=True)
+    return run_dir
+
+
+def _save_checklist(run_dir: Path, cl: dict) -> None:
+    cl["updated_at"] = datetime.now().astimezone().isoformat()
+    _atomic_write_json(run_dir / "checklist.json", cl)
+
+
+def _load_checklist(run_dir: Path) -> dict:
+    # utf-8-sig：兼容外部工具（如 PowerShell）写入的 BOM
+    return json.loads((run_dir / "checklist.json").read_text(encoding="utf-8-sig"))
+
+
+def _pick_resume_run(explicit: str) -> Path | None:
+    """--resume [RUN_ID]：给了 id 用 id；没给则取最近一个未完成 run。"""
+    if explicit:
+        d = RUNS_DIR / explicit
+        return d if (d / "checklist.json").exists() else None
+    if not RUNS_DIR.exists():
+        return None
+    for d in sorted(RUNS_DIR.iterdir(), reverse=True):
+        cl_path = d / "checklist.json"
+        if cl_path.exists():
+            try:
+                if _load_checklist(d).get("status") != "done":
+                    return d
+            except (json.JSONDecodeError, OSError):
+                continue
+    return None
+
+
 def scrape_one(archive: Path, depth: str, passwords: list[str],
-               force: bool, ai_cfg: dict) -> dict:
-    """刮削单个包，返回运行记录（含 outcome）。"""
+               force: bool, ai_cfg: dict,
+               run_dir: Path | None = None, on_phase=None) -> dict:
+    """刮削单个包，返回运行记录（含 outcome）。
+
+    run_dir 非空时：AI 留痕落 run_dir/ai_logs/；提取完成的中间 JSON
+    落 run_dir/extracted_<hash8>.json，供 resume 时跳过重复解压。
+    on_phase(phase, detail)：阶段推进回调，编排层用于记账 checklist。
+    phase ∈ cached / extracted / written / failed。
+    """
     rec = {"path": str(archive), "outcome": "", "detail": ""}
+
+    def mark(phase: str, detail: str = "") -> None:
+        if on_phase:
+            on_phase(phase, detail)
+
     try:
         sha = extractor.sha256_file(archive)
         if not sidecar.needs_scrape(archive, sha, force=force):
@@ -67,10 +131,30 @@ def scrape_one(archive: Path, depth: str, passwords: list[str],
             if changed:
                 sidecar.write(archive, doc)
                 rec["outcome"] = "skip+pathfix"
+            mark("cached", rec["outcome"])
             return rec
 
-        ex = extractor.extract(str(archive), depth=depth, passwords=passwords)
-        identity, confidence, ai_warnings = identify(ex, cfg=ai_cfg)
+        # resume 优化：本 run 已提取过的包直接加载中间 JSON，不重复解压
+        ex_cache = run_dir / f"extracted_{sha[:8]}.json" if run_dir else None
+        if ex_cache and ex_cache.exists():
+            try:
+                ex = json.loads(ex_cache.read_text(encoding="utf-8"))
+                mark("extracted", "resume: 复用已提取中间结果")
+            except (json.JSONDecodeError, OSError):
+                ex = None
+        else:
+            ex = None
+        if ex is None:
+            ex = extractor.extract(str(archive), depth=depth, passwords=passwords)
+            if ex_cache:
+                try:
+                    _atomic_write_json(ex_cache, ex)
+                except OSError:
+                    pass
+            mark("extracted", f"entries={ex['structure'].get('entry_count')}")
+        identity, confidence, ai_warnings = identify(
+            ex, cfg=ai_cfg, log_dir=run_dir / "ai_logs" if run_dir else None,
+            label=archive.name)
         engine = f"{ai_cfg.get('provider', 'custom')}:{ai_cfg.get('model') or 'auto'}"
 
         doc = {
@@ -102,10 +186,12 @@ def scrape_one(archive: Path, depth: str, passwords: list[str],
         sidecar.write(archive, doc)
         rec["outcome"] = "ok"
         rec["detail"] = f"confidence={confidence}"
+        mark("written", rec["detail"])
         return rec
     except Exception as e:
         rec["outcome"] = "fail"
         rec["detail"] = f"{type(e).__name__}: {e}"
+        mark("failed", rec["detail"])
         return rec
 
 
@@ -114,29 +200,79 @@ def cmd_scan(args) -> int:
     passwords = load_passwords(args.pwfile)
     ai_cfg = load_config(args.config)
     target = Path(args.path)
-    if target.is_file():
-        archives = [target]
+
+    # run 目录与账本：新建或续跑
+    if args.resume is None:
+        run_dir = new_run_dir()
+        if target.is_file():
+            archives = [target]
+        else:
+            archives = find_archives(target, recursive=not args.no_recurse)
+        if not archives:
+            print("未找到压缩包")
+            run_dir.rmdir()
+            return 0
+        cl = {
+            "run_id": run_dir.name,
+            "started_at": datetime.now().astimezone().isoformat(),
+            "status": "running",
+            "depth": depth,
+            "packages": {str(a): {"phase": "pending", "detail": ""} for a in archives},
+        }
+        _save_checklist(run_dir, cl)
+        print(f"run: {run_dir}")
     else:
-        archives = find_archives(target, recursive=not args.no_recurse)
-    if not archives:
-        print("未找到压缩包")
-        return 0
+        run_dir = _pick_resume_run(args.resume)
+        if run_dir is None:
+            print(f"无可续跑的 run（--resume {args.resume or '(自动)'}）："
+                  f"{RUNS_DIR}/ 下不存在对应账本")
+            return 1
+        cl = _load_checklist(run_dir)
+        cl["status"] = "running"
+        _save_checklist(run_dir, cl)
+        archives = [Path(p) for p, r in cl["packages"].items()
+                    if r["phase"] in REDO_PHASES]
+        missing = [p for p in cl["packages"] if not Path(p).exists()
+                   and cl["packages"][p]["phase"] in REDO_PHASES]
+        print(f"resume run: {run_dir}（待重做 {len(archives)} / 共 {len(cl['packages'])}）")
+        if missing:
+            print("警告：以下待重做包已不存在于磁盘:")
+            for m in missing:
+                print(f"  {m}")
 
     counters = {"ok": 0, "skip": 0, "skip+pathfix": 0, "fail": 0}
     low_conf: list[str] = []
-    for i, a in enumerate(archives, 1):
-        rec = scrape_one(a, depth, passwords, args.force, ai_cfg)
-        counters[rec["outcome"]] = counters.get(rec["outcome"], 0) + 1
-        mark = {"ok": "+", "skip": "=", "skip+pathfix": "~", "fail": "!"}[rec["outcome"]]
-        print(f"[{i}/{len(archives)}] {mark} {a.name}  {rec['detail']}")
-        if rec["outcome"] == "ok":
-            doc = sidecar.load(a)
-            if doc and doc["scrape"]["confidence"] < LOW_CONFIDENCE:
-                low_conf.append(f"{a} ({doc['scrape']['confidence']:.2f})")
 
+    def on_phase(phase: str, detail: str, pkg: str) -> None:
+        cl["packages"].setdefault(pkg, {"phase": phase, "detail": ""})
+        cl["packages"][pkg].update(phase=phase, detail=detail)
+        _save_checklist(run_dir, cl)
+
+    try:
+        for i, a in enumerate(archives, 1):
+            rec = scrape_one(a, depth, passwords, args.force, ai_cfg,
+                             run_dir=run_dir,
+                             on_phase=lambda ph, dt, _p=str(a): on_phase(ph, dt, _p))
+            counters[rec["outcome"]] = counters.get(rec["outcome"], 0) + 1
+            mark_ch = {"ok": "+", "skip": "=", "skip+pathfix": "~", "fail": "!"}[rec["outcome"]]
+            print(f"[{i}/{len(archives)}] {mark_ch} {a.name}  {rec['detail']}")
+            if rec["outcome"] == "ok":
+                doc = sidecar.load(a)
+                if doc and doc["scrape"]["confidence"] < LOW_CONFIDENCE:
+                    low_conf.append(f"{a} ({doc['scrape']['confidence']:.2f})")
+    except KeyboardInterrupt:
+        cl["status"] = "interrupted"
+        _save_checklist(run_dir, cl)
+        print(f"\n中断：进度已记入 {run_dir / 'checklist.json'}，"
+              f"用 --resume 续跑")
+        return 130
+
+    cl["status"] = "done"
+    _save_checklist(run_dir, cl)
     print(f"\n共 {len(archives)} 个包 | 新刮 {counters['ok']} | "
           f"缓存跳过 {counters['skip'] + counters['skip+pathfix']} | "
           f"失败 {counters['fail']}")
+    print(f"run 记录: {run_dir}")
     if low_conf:
         print("低置信（建议人工复核或用 --force 重刮）:")
         for s in low_conf:
@@ -258,6 +394,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--force", action="store_true", help="忽略缓存强制重刮")
     p.add_argument("--config", help="AI 配置文件路径（默认 scraper.json）")
     p.add_argument("--no-recurse", action="store_true", help="不递归子目录")
+    p.add_argument("--resume", nargs="?", const="", default=None, metavar="RUN_ID",
+                   help="续跑：不带值自动选最近未完成 run；带值用指定 run")
     p.set_defaults(func=cmd_scan)
 
     p = sub.add_parser("show", help="中文映射展示侧车")

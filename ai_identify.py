@@ -10,10 +10,17 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from schema import IDENTITY_JSON_SCHEMA
+
+
+def datetime_now_iso() -> str:
+    return datetime.now().astimezone().isoformat()
+
 
 PROVIDER_DEFAULTS = {
     "lmstudio": "http://localhost:1234/v1",
@@ -140,10 +147,24 @@ def _endpoint_available(cfg: dict) -> bool:
         return False
 
 
-def identify(extracted: dict, cfg: dict | None = None) -> tuple[dict, float, list[str]]:
+def _safe_label(label: str) -> str:
+    return "".join(c if (c.isalnum() or c in "-._") else "_" for c in label) or "pkg"
+
+
+def _write_log(log_dir: Path, name: str, data: dict) -> None:
+    (log_dir / name).write_text(
+        json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def identify(extracted: dict, cfg: dict | None = None,
+             log_dir: str | Path | None = None, label: str = "",
+             ) -> tuple[dict, float, list[str]]:
     """返回 (identity_dict, confidence, warnings)。
 
     cfg 为 ai 配置段（load_config 的返回值）。
+    log_dir 非空时，每次真实 API 交互的完整请求/响应落盘留痕
+    （排查用；留痕失败只记 warning，不影响识别主流程）。
+    label 为留痕文件名前缀（通常是包名）。
     """
     warnings: list[str] = []
     cfg = cfg or load_config()
@@ -176,14 +197,39 @@ def identify(extracted: dict, cfg: dict | None = None) -> tuple[dict, float, lis
     out = None
     timeout = int(cfg.get("timeout", 300))
     url = f"{cfg['base_url'].rstrip('/')}/chat/completions"
+    stem = f"{_safe_label(label)}_{extracted.get('sha256', '')[:8]}"
+    log_dir_p = Path(log_dir) if log_dir else None
+    if log_dir_p:
+        try:
+            log_dir_p.mkdir(parents=True, exist_ok=True)
+            _write_log(log_dir_p, f"{stem}_prompt.json", {
+                "ts": datetime_now_iso(), "url": url, "body": payload})
+        except OSError as e:
+            warnings.append(f"AI 留痕写入失败: {e}")
     for attempt in (1, 2):
         try:
+            t0 = time.monotonic()
             resp = _post(url, {**payload, "_api_key": cfg.get("api_key", "")}, timeout)
+            elapsed = time.monotonic() - t0
             content = resp["choices"][0]["message"]["content"]
             out = json.loads(content)
+            if log_dir_p:
+                try:
+                    _write_log(log_dir_p, f"{stem}_response.json", {
+                        "ts": datetime_now_iso(), "elapsed_s": round(elapsed, 2),
+                        "attempt": attempt, "body": resp})
+                except OSError as e:
+                    warnings.append(f"AI 留痕写入失败: {e}")
             break
         except (OSError, KeyError, IndexError, json.JSONDecodeError) as e:
             if attempt == 2:
+                if log_dir_p:
+                    try:
+                        _write_log(log_dir_p, f"{stem}_error.json", {
+                            "ts": datetime_now_iso(),
+                            "error": f"{type(e).__name__}: {e}"})
+                    except OSError:
+                        pass
                 return _fallback(f"AI 识别两次尝试均失败: {type(e).__name__}"), 0.0, warnings
 
     # 程序校验
