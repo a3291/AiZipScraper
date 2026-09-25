@@ -1,10 +1,11 @@
-"""ai_identify.py — 识别会话引擎。
+"""ai_identify.py — recognition session engine.
 
-我是什么：与 AI 后端逐轮交互的会话逻辑（连接逻辑在 backend.py）。
-我的接口：run_session(context_pkg, prompts, cfg, mlog, hint_exts)
-  → (identity, confidence, warnings, stats)；逐轮追加 messages.json。
-护栏：max_turns、非法JSON容忍1次、同页停滞转强制、强制后仍翻页2次降级；
-任何失败路径降级 unknown。
+What I am: per-turn session logic with the AI backend (connection logic lives
+in backend.py).
+My interface: run_session(context_pkg, prompts, cfg, mlog, hint_exts)
+  → (identity, confidence, warnings, stats); appends to messages.json per turn.
+Guardrails: max_turns, one invalid-JSON tolerance, page stall → forced publish,
+2 more page turns after force → degrade; every failure path degrades to unknown.
 """
 from __future__ import annotations
 
@@ -33,21 +34,21 @@ def datetime_now_iso() -> str:
 
 
 def load_config(path: str | None = None) -> dict:
-    """读 jsons/scraper.json——唯一配置真相，缺键直接报错（不静默回落默认值）。"""
+    """Read jsons/scraper.json — the single source of config truth; missing keys raise (no silent defaults)."""
     p = Path(path) if path else JSONS / "scraper.json"
     try:
         raw = json.loads(p.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as e:
-        raise ValueError(f"配置文件不可读: {p} ({e})") from e
+        raise ValueError(f"config file unreadable: {p} ({e})") from e
 
     ai = raw.get("ai") or {}
     missing = [k for k in REQUIRED_AI_KEYS if k not in ai]
     if missing:
-        raise ValueError(f"scraper.json 缺少 ai 键: {missing}（文件 {p}）")
+        raise ValueError(f"scraper.json missing ai keys: {missing} (file {p})")
 
     conc = raw.get("concurrency")
     if not isinstance(conc, int) or conc < 1:
-        raise ValueError(f"scraper.json concurrency 必须为正整数（当前: {conc!r}）")
+        raise ValueError(f"scraper.json concurrency must be a positive integer (got: {conc!r})")
 
     cfg = dict(ai)
     if cfg["provider"] in backend.PROVIDER_DEFAULTS and not cfg["base_url"]:
@@ -58,9 +59,9 @@ def load_config(path: str | None = None) -> dict:
 
 
 def load_prompts(path: str | None = None) -> dict:
-    """读 jsons/prompt.json（提示词注册表 + action 契约）。
+    """Read jsons/prompt.json (prompt registry + action contract).
 
-    契约硬化：publish action 的 category 枚举必须与 schema.CATEGORIES 一致。
+    The publish action's category enum must match schema.CATEGORIES.
     """
     p = Path(path) if path else JSONS / "prompt.json"
     data = json.loads(p.read_text(encoding="utf-8-sig"))
@@ -69,10 +70,10 @@ def load_prompts(path: str | None = None) -> dict:
         enum = contract["schema"]["properties"]["identity"]["anyOf"][1] \
             ["properties"]["category"]["enum"]
     except (KeyError, IndexError, TypeError):
-        raise ValueError(f"prompt.json 契约缺少 identity.category 枚举: {p}")
+        raise ValueError(f"prompt.json contract lacks the identity.category enum: {p}")
     if sorted(enum) != sorted(schema.CATEGORIES):
-        raise ValueError(f"prompt.json category 枚举 {enum} 与 schema.CATEGORIES "
-                         f"{schema.CATEGORIES} 不一致")
+        raise ValueError(f"prompt.json category enum {enum} does not match "
+                         f"schema.CATEGORIES {schema.CATEGORIES}")
     prompts = {k: v["text"] for k, v in data["prompts"].items()}
     roles = {k: v.get("role", "user") for k, v in data["prompts"].items()}
     return {"contract": contract, "prompts": prompts, "roles": roles}
@@ -112,12 +113,12 @@ def _estimate_tokens(messages: list[dict]) -> int:
     return sum(len(m.get("content", "")) for m in messages) // 4
 
 
-# ---------- messages.json（按 message 组织，逐轮原子重写） ----------
+# ---------- messages.json (organized per message, atomic rewrite per turn) ----------
 
 class MessageLog:
-    """文件即真相：append 带锁重读-合并-原子写，支持 api 并发多实例。"""
+    """The file is the truth: locked read-merge-atomic-write on append; supports concurrent api instances."""
 
-    _lock = threading.Lock()   # 类级锁
+    _lock = threading.Lock()   # class-level lock
 
     def __init__(self, run_dir: Path, entry_id: str):
         self.path = run_dir / "messages.json"
@@ -150,11 +151,11 @@ class MessageLog:
                        .get(self.entry_id, {}).get("messages", []))
 
 
-# ---------- 主会话 ----------
+# ---------- session ----------
 
 def _say(messages: list[dict], mlog: "MessageLog", R: dict, P: dict,
          key: str, text: str | None = None) -> None:
-    """向会话追加一条提示词消息并同步落 messages.json（单点双写）。"""
+    """Append one prompt message to the session and mirror it into messages.json (single point of dual write)."""
     role = R[key]
     content = text if text is not None else P[key]
     messages.append({"role": role, "content": content})
@@ -164,7 +165,7 @@ def _say(messages: list[dict], mlog: "MessageLog", R: dict, P: dict,
 def run_session(context_pkg: dict, prompts: dict, cfg: dict,
                 mlog: MessageLog, hint_exts: dict[str, int] | None = None,
                 ) -> tuple[dict, float, list[str], dict]:
-    """单包识别会话。返回 (identity, confidence, warnings, stats)。"""
+    """Single-package recognition session. Returns (identity, confidence, warnings, stats)."""
     warnings: list[str] = []
     stats = {"pages": context_pkg["stats"]["page_count"], "pages_read": 0,
              "turns": 0, "tokens_in": 0, "tokens_out": 0}
@@ -173,19 +174,20 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         return _fallback(reason), 0.0, warnings, stats
 
     if not backend.endpoint_available(cfg):
-        return bail(f"AI 后端不可用（{cfg['base_url']}）")
+        return bail(f"AI backend unreachable ({cfg['base_url']})")
     model = backend.resolve_model(cfg)
     if model is None:
-        return bail(f"AI 后端无已加载模型（{cfg['base_url']}）")
+        return bail(f"AI backend has no loaded model ({cfg['base_url']})")
 
-    P = prompts["prompts"]          # key -> text 模板
+    P = prompts["prompts"]          # key -> text template
     R = prompts["roles"]            # key -> role
     contract = prompts["contract"]
 
     exts = hint_exts or {}
     hint = _hint_from_extensions(exts)
-    tail_text = context_pkg["tail_page"]["text"]   # 末尾页（元数据）默认先展示
-    catalog = f"内容页共 {stats['pages']} 页（第1..{stats['pages']}页），末尾页为第 {context_pkg['tail_page']['no']} 页。"
+    tail_text = context_pkg["tail_page"]["text"]   # last page (metadata) shown first by default
+    catalog = (f"Content pages: {stats['pages']} total (pages 1..{stats['pages']}); "
+               f"the last page is page {context_pkg['tail_page']['no']}.")
 
     messages: list[dict] = [
         {"role": R["system"], "content": P["system"]},
@@ -230,7 +232,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
             usage_tokens = stats["tokens_in"] + stats["tokens_out"]
             content = resp["choices"][0]["message"]["content"]
         except (OSError, KeyError, IndexError) as e:
-            return bail(f"AI 会话请求失败: {type(e).__name__}: {e}")
+            return bail(f"AI session request failed: {type(e).__name__}: {e}")
         messages.append({"role": "assistant", "content": content})
         mlog.append("assistant", content)
 
@@ -238,7 +240,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         if out is None or out.get("action") not in ("read_page", "publish"):
             bad_json += 1
             if bad_json > 1:
-                return bail(f"AI 输出非法 control JSON（{bad_json} 次）")
+                return bail(f"invalid control JSON from AI ({bad_json} times)")
             _say(messages, mlog, R, P, "bad_json_retry",
                  P["bad_json_retry"].format(attempt_left=2 - bad_json))
             continue
@@ -247,7 +249,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         if action == "publish":
             ident = out.get("identity")
             if not isinstance(ident, dict):
-                return bail("publish 缺少 identity 对象")
+                return bail("publish missing identity object")
             identity, conf, vw = _validate_identity(ident)
             warnings.extend(vw)
             return identity, conf, warnings, stats
@@ -258,7 +260,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         if forced:
             forced_retries += 1
             if forced_retries > 2:
-                return bail("强制发布后仍多次翻页，放弃识别")
+                return bail("kept paging after forced publish; giving up")
             _say(messages, mlog, R, P, "force_publish_only")
             continue
         if not valid or page in read_pages:
@@ -267,7 +269,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
                 _say(messages, mlog, R, P, "stall_to_publish")
                 forced = True
             else:
-                why = "该页不存在" if not valid else "该页已读过"
+                why = "page does not exist" if not valid else "page already read"
                 _say(messages, mlog, R, P, "dup_page", P["dup_page"].format(why=why))
             continue
         read_pages.add(page)
@@ -277,17 +279,17 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         _say(messages, mlog, R, P, "page_deliver",
              P["page_deliver"].format(page_no=page, page_text=body))
 
-    return bail(f"达到 max_turns={cfg['max_turns']} 上限仍未发布")
+    return bail(f"reached max_turns={cfg['max_turns']} without publishing")
 
 
 def _validate_identity(out: dict) -> tuple[dict, float, list[str]]:
     warnings: list[str] = []
     conf = out.get("confidence")
     if not (isinstance(conf, (int, float)) and 0.0 <= conf <= 1.0):
-        warnings.append("AI 返回的 confidence 非法，按 0.5 处理")
+        warnings.append("AI returned an invalid confidence; using 0.5")
         conf = 0.5
     if out.get("category") not in CATEGORIES:
-        warnings.append(f"AI 返回的 category 非法: {out.get('category')!r}，按 unknown 处理")
+        warnings.append(f"AI returned an invalid category: {out.get('category')!r}; using unknown")
         out["category"] = "unknown"
     identity = {
         "title": str(out.get("title", ""))[:200],
@@ -297,7 +299,7 @@ def _validate_identity(out: dict) -> tuple[dict, float, list[str]]:
         "language": [str(t) for t in out.get("language", [])][:10],
     }
     if conf < LOW_CONFIDENCE:
-        warnings.append(f"低置信度 {conf:.2f} < {LOW_CONFIDENCE}，建议人工复核")
+        warnings.append(f"low confidence {conf:.2f} < {LOW_CONFIDENCE}; manual review recommended")
     return identity, round(float(conf), 2), warnings
 
 

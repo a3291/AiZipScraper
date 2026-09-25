@@ -1,4 +1,4 @@
-"""paths.py — 项目路径单源（全部运行时路径由此计算，锚定项目根，不依赖 CWD）。"""
+"""paths.py — single source of project paths (anchored to the project root, CWD-independent)."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent

@@ -1,7 +1,9 @@
-"""publisher.py — 发布器：publish.json 模板 → 填充 → 校验 → <原名>.publish.json。
+"""publisher.py — publisher: publish.json template → fill → validate → <name>.publish.json.
 
-合法性闸门：侧车只有一条生成路径且必经 schema 校验，非法不落盘。
-程序填 <A_*>（锚定/结构/统计），AI 填 <I_*>（identity/confidence）。
+Legitimacy gate: the sidecar has exactly one generation path and always passes
+schema validation; invalid output never hits disk.
+The program fills <A_*> (anchoring/structure/stats), the AI fills <I_*>
+(identity/confidence).
 """
 from __future__ import annotations
 
@@ -21,7 +23,7 @@ def load_template(path: str | None = None) -> dict:
 
 
 def _coerce(value: str, ph: str):
-    """占位符值 → 目标类型（I_TAGS/I_LANGUAGE/I_WARNINGS/flags 等为 JSON 串）。"""
+    """Placeholder value → target type (I_TAGS/I_LANGUAGE/I_WARNINGS/flags etc. are JSON strings)."""
     if ph in ("I_TAGS", "I_LANGUAGE", "A_WARNINGS", "A_TOP_LEVEL_DIRS",
               "A_NOTABLE_FILES"):
         return json.loads(value) if isinstance(value, str) else value
@@ -37,7 +39,7 @@ def _coerce(value: str, ph: str):
 
 def fill(template: dict, program: dict, identity: dict,
          warnings: list[str]) -> dict:
-    """填充模板。program 为程序侧字段，identity 为 AI 侧 identity。"""
+    """Fill the template. program holds program-side fields, identity the AI-side identity."""
     ctx = {
         "A_SHA256": program["sha256"],
         "A_SOURCE_PATH": program["source_path"],
@@ -81,9 +83,10 @@ def fill(template: dict, program: dict, identity: dict,
 
 def publish(target: str | Path, program: dict, identity: dict,
             warnings: list[str], template_path: str | None = None) -> tuple[Path | None, list[str]]:
-    """主入口：填模板 → 校验 → 落 <原名>.publish.json。
+    """Main entry: fill template → validate → write <name>.publish.json.
 
-    返回 (侧车路径 | None, 校验问题列表)。None = 校验未过，未落盘。
+    Returns (sidecar path | None, list of validation problems).
+    None = validation failed, nothing written.
     """
     template = load_template(template_path)
     doc = fill(template, program, identity, warnings)

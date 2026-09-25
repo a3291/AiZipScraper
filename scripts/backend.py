@@ -1,7 +1,9 @@
-"""backend.py — AI 服务器/API 连接层（与识别会话逻辑分离）。
+"""backend.py — AI server/API connection layer (separated from session logic).
 
-OpenAI 兼容协议：/models 探测与模型解析、/chat/completions 请求。
-默认后端 LM Studio；任何 OpenAI 兼容端点均可（Ollama /v1、vLLM、llama.cpp server）。
+OpenAI-compatible protocol: /models probing and model resolution,
+/chat/completions requests.
+Default backend LM Studio; any OpenAI-compatible endpoint works
+(Ollama /v1, vLLM, llama.cpp server).
 """
 from __future__ import annotations
 
@@ -27,7 +29,7 @@ def post(url: str, payload: dict, timeout: int, api_key: str = "") -> dict:
 
 
 def resolve_model(cfg: dict) -> str | None:
-    """model 留空时向后端 /models 查询，取第一个可用模型。"""
+    """When model is empty, query the backend /models and take the first available model."""
     if cfg.get("model"):
         return cfg["model"]
     try:

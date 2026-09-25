@@ -1,20 +1,23 @@
-"""run_extractor.py — 提取脚本运行器（子进程入口）。
+"""run_extractor.py — extractor runner (subprocess entry).
 
-用法: uv run python scripts/run_extractor.py <extractor名> <传入路径> <传出目录>
-  extractor名 = extractors/ 下的目录名或文件名（不含 .py），如 default。
-  目录形态: extractors/<name>/extractor.py（配置放同目录）。
-  文件形态: extractors/<name>.py。
+Usage: uv run python scripts/run_extractor.py <extractor name> <in path> <out dir>
+  name = a directory or file name under extractors/ (without .py), e.g. default.
+  Directory form: extractors/<name>/extractor.py (config lives alongside).
+  File form: extractors/<name>.py.
 
-契约：
-  1. 提取脚本暴露 extract(in_path, out_dir) -> dict。
-  2. 结果 dict 必须含 RESULT_REQUIRED_KEYS 全部键且类型正确——运行器在源头
-     校验，不合规退出码 3，绝不写出 _result.json（下游拿到即信任）。
-  3. 校验通过后写 <传出目录>/_result.json 供调用方读取。
-  4. 心跳：起手写 <传出目录>/_heartbeat.json（pid/started_at），成功后删除；
-     若该文件残留，说明提取器中途挂死，供外部观测。
-退出码：0 成功；2 参数错误；3 提取器加载/执行/契约校验失败。
-子进程由调用方以项目 uv 环境的解释器启动；提取器只依赖 uv 环境内依赖，
-不 import 项目外围模块。
+Contract:
+  1. The extractor script exposes extract(in_path, out_dir) -> dict.
+  2. The result dict must contain every key in RESULT_REQUIRED_KEYS with correct
+     types — validated at the source; on violation exit code 3 and _result.json
+     is never written (downstream trusts what it receives).
+  3. After validation passes, <out dir>/_result.json is written for the caller.
+  4. Heartbeat: <out dir>/_heartbeat.json (pid/started_at) written at start and
+     removed on success; a leftover file means the extractor hung mid-run, for
+     external observation.
+Exit codes: 0 success; 2 bad args; 3 extractor load/execution/contract failure.
+The subprocess is started by the caller with the project uv environment's
+interpreter; extractors depend only on uv-environment packages and never import
+project modules.
 """
 import importlib.util
 import json
@@ -28,7 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 EXTRACTORS = ROOT / "extractors"
 EXIT_ARGS, EXIT_FAIL = 2, 3
 
-# _result.json 契约：键 → 类型
+# _result.json contract: key → type
 RESULT_REQUIRED_KEYS = {
     "entry_id": str, "kind": str, "sha256": str,
     "structure": dict, "password_found": bool,
@@ -37,14 +40,14 @@ RESULT_REQUIRED_KEYS = {
 
 
 def _validate_result(result) -> str | None:
-    """校验提取结果契约，返回错误描述或 None。"""
+    """Validate the extractor result contract; returns an error description or None."""
     if not isinstance(result, dict):
-        return f"extract() 返回 {type(result).__name__}，应为 dict"
+        return f"extract() returned {type(result).__name__}, expected dict"
     for key, typ in RESULT_REQUIRED_KEYS.items():
         if key not in result:
-            return f"结果缺少必需键: {key}"
+            return f"missing required key: {key}"
         if not isinstance(result[key], typ):
-            return f"结果键 {key} 应为 {typ.__name__}，实际 {type(result[key]).__name__}"
+            return f"result key {key} should be {typ.__name__}, got {type(result[key]).__name__}"
     return None
 
 
@@ -57,7 +60,7 @@ def _heartbeat(out_dir: Path):
 
 
 def load_extractor(name: str):
-    """按名加载提取器模块：目录（extractor.py）或单文件。"""
+    """Load an extractor module by name: directory (extractor.py) or single file."""
     for cand in (EXTRACTORS / name / "extractor.py", EXTRACTORS / f"{name}.py"):
         if cand.is_file():
             spec = importlib.util.spec_from_file_location(
@@ -71,32 +74,33 @@ def load_extractor(name: str):
 
 def main(argv: list[str]) -> int:
     if len(argv) != 3:
-        print("用法: run_extractor.py <extractor名> <传入路径> <传出目录>",
+        print("Usage: run_extractor.py <extractor name> <in path> <out dir>",
               file=sys.stderr)
         return EXIT_ARGS
     name, in_path, out_dir = argv
     if name.startswith("_") or "/" in name or "\\" in name:
-        print(f"非法提取器名: {name}", file=sys.stderr)
+        print(f"illegal extractor name: {name}", file=sys.stderr)
         return EXIT_FAIL
     out = Path(out_dir)
 
     try:
         mod = load_extractor(name)
         if mod is None or not hasattr(mod, "extract"):
-            print(f"提取器不存在或缺 extract(): extractors/{name}", file=sys.stderr)
+            print(f"extractor missing or has no extract(): extractors/{name}",
+                  file=sys.stderr)
             return EXIT_FAIL
         _heartbeat(out)
         result = mod.extract(in_path, out)
         err = _validate_result(result)
         if err is not None:
-            print(f"提取结果契约不合规: {err}", file=sys.stderr)
+            print(f"extractor result contract violation: {err}", file=sys.stderr)
             return EXIT_FAIL
     except Exception as e:
         print(f"{type(e).__name__}: {e}", file=sys.stderr)
         return EXIT_FAIL
 
     out.mkdir(parents=True, exist_ok=True)
-    (out / "_heartbeat.json").unlink(missing_ok=True)   # 心跳撤除
+    (out / "_heartbeat.json").unlink(missing_ok=True)   # heartbeat removed
     (out / "_result.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     return 0

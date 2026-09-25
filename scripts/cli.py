@@ -1,8 +1,10 @@
-"""cli.py — 命令行编排器。
+"""cli.py — command-line orchestrator.
 
-我是什么：scan 批处理与 show/check/export 只读命令的调度入口。
-我的接口：scan/show/check/export 四个子命令（--help 可查）；
-输出：runs/<run_id>/ 留档与目标旁 <原名>.publish.json。
+What I am: the dispatch entry for the scan batch pipeline and the read-only
+show/check/export commands.
+My interface: the four subcommands scan/show/check/export (--help for details);
+outputs: runs/<run_id>/ archives and a <name>.publish.json sidecar next to each
+target.
 """
 from __future__ import annotations
 
@@ -29,15 +31,7 @@ from ai_identify import (MessageLog, datetime_now_iso,
 ROOT = paths.ROOT
 RUNS_DIR = paths.RUNS_DIR
 PH_DONE, PH_FAIL, PH_SKIP = "done", "failed", "skipped"
-CL_LOCK = threading.Lock()   # checklist.json 并发写锁（api 并发段共用）
-
-SHOW_ZH = {
-    "sha256": "内容哈希(SHA256)",
-    "source_path": "锚定路径", "file_size": "文件大小", "mtime": "修改时间",
-    "scraped_at": "刮削时间", "engine": "识别引擎", "depth": "识别深度",
-    "confidence": "置信度", "title": "名称", "category": "大类",
-    "summary": "总结", "tags": "标签", "language": "语言",
-}
+CL_LOCK = threading.Lock()   # lock for concurrent checklist.json writes (shared by the api pool)
 
 
 def _atomic_write_json(path: Path, obj: dict) -> None:
@@ -46,10 +40,10 @@ def _atomic_write_json(path: Path, obj: dict) -> None:
     os.replace(tmp, path)
 
 
-# ---------- 扫描 ----------
+# ---------- scan ----------
 
 def find_targets(root: str | Path, recursive: bool = True) -> list[Path]:
-    """所有文件皆为目标；排除 runs/ 与 *.publish.json。"""
+    """Every file is a target; runs/ and *.publish.json are excluded."""
     root = Path(root)
     if root.is_file():
         return [root]
@@ -85,7 +79,6 @@ def new_run_dir() -> Path:
 
 
 # ---------- checklist ----------
-
 def _new_pkg_rec(target: Path) -> dict:
     return {
         "name": target.name, "path": str(target),
@@ -98,13 +91,14 @@ def _new_pkg_rec(target: Path) -> dict:
     }
 
 
-# ---------- 主流程 ----------
+# ---------- main flow ----------
 
 def extract_one(target: Path, run_dir: Path,
                 extractor_name: str, timeout_s: int) -> tuple[dict | None, str | None]:
-    """子进程提取单目标：传路径、限时、收结果。
+    """Subprocess extraction of one target: pass the path, time-boxed, collect the result.
 
-    返回 (结果dict, None) 或 (None, 错误信息)；完成判定 = 退出码 0 + _result.json 可解析。
+    Returns (result dict, None) or (None, error message);
+    completion = exit code 0 + parseable _result.json.
     """
     entry_id = sha256_file(target)[:8]
     out_dir = run_dir / "extracted" / entry_id
@@ -114,7 +108,7 @@ def extract_one(target: Path, run_dir: Path,
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               timeout=timeout_s, cwd=ROOT)
     except subprocess.TimeoutExpired:
-        return None, f"提取超时（>{timeout_s}s）"
+        return None, f"extraction timed out (>{timeout_s}s)"
     if proc.returncode != 0:
         tail = (proc.stderr.strip().splitlines() or ["extractor failed"])[-1]
         return None, tail
@@ -122,12 +116,12 @@ def extract_one(target: Path, run_dir: Path,
         return json.loads((out_dir / "_result.json").read_text(
             encoding="utf-8-sig")), None
     except (OSError, json.JSONDecodeError) as e:
-        return None, f"_result.json 读取失败: {e}"
+        return None, f"_result.json read failed: {e}"
 
 
 def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
                          cl: dict, ex: dict) -> dict:
-    """识别并发布单目标：打包 → 会话 → 校验落盘（输入 ex 为提取结果 dict）。"""
+    """Identify and publish one target: pack → session → validate & write (ex is the extraction result dict)."""
     rec = {"name": target.name, "outcome": "", "detail": ""}
     entry_id = ex["entry_id"]
     pkg = cl["packages"].setdefault(str(target), _new_pkg_rec(target))
@@ -135,7 +129,7 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
                           dir=f"extracted/{entry_id}")
     _save(cl, run_dir)
 
-    # 打包（只读 extracted/）
+    # pack (reads extracted/ only)
     limits = cfg.get("limits", {})
     try:
         ctx_pkg = context_builder.build(
@@ -156,10 +150,10 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
         _atomic_write_json(ctx_path, ctx_all)
     except OSError as e:
         rec["outcome"] = "fail-context"
-        rec["detail"] = f"context 写盘失败: {e}"
+        rec["detail"] = f"context write failed: {e}"
         return rec
 
-    # 会话
+    # session
     mlog = MessageLog(run_dir, entry_id)
     t0 = datetime.now().astimezone()
     try:
@@ -171,9 +165,9 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
         rec["detail"] = f"{type(e).__name__}: {e}"
         return rec
     elapsed = (datetime.now().astimezone() - t0).total_seconds()
-    warnings.extend(ex["warnings"])   # 提取器自带警告原样进链路
+    warnings.extend(ex["warnings"])   # extractor's own warnings pass through untouched
     published = "_fallback_reason" not in identity
-    identity["confidence"] = conf   # 填模板需要
+    identity["confidence"] = conf   # needed for the template fill
     pkg["ai"].update(phase=PH_DONE, published=published,
                      detail=identity.get("_fallback_reason", ""))
     pkg["stats"].update(pages=stats["pages"], pages_read=stats["pages_read"],
@@ -184,7 +178,7 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
                         elapsed_s=round(elapsed, 1))
     _save(cl, run_dir)
 
-    # 校验落盘
+    # validate & write
     program = {
         "sha256": ex["sha256"],
         "source_path": str(target.resolve()),
@@ -205,9 +199,9 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
     }
     side, problems = publisher.publish(target, program, identity, warnings)
     if side is None:
-        pkg["publish"].update(phase=PH_FAIL, detail=f"校验未过: {problems}")
+        pkg["publish"].update(phase=PH_FAIL, detail=f"validation failed: {problems}")
         rec["outcome"] = "fail-publish"
-        rec["detail"] = f"校验未过: {problems}"
+        rec["detail"] = f"validation failed: {problems}"
         return rec
     pkg["publish"].update(phase=PH_DONE, sidecar=str(side))
     rec["outcome"] = "ok"
@@ -218,7 +212,7 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
 def process_one(target: Path, run_dir: Path,
                 cfg: dict, prompts: dict, cl: dict,
                 extractor_name: str = "default") -> dict:
-    """单目标全链（提取→识别→发布），供脚本/测试直接调用。"""
+    """Full chain for one target (extract → identify → publish); callable directly from scripts/tests."""
     ex, err = extract_one(target, run_dir, extractor_name,
                           cfg.get("limits", {}).get("extract_timeout_s", 1800))
     if err is not None:
@@ -243,7 +237,7 @@ def cmd_scan(args) -> int:
         conc = args.workers
     targets = find_targets(args.path, recursive=not args.no_recurse)
     if not targets:
-        print("未找到目标文件")
+        print("no target files found")
         return 0
 
     run_dir = new_run_dir()
@@ -257,8 +251,10 @@ def cmd_scan(args) -> int:
     _save(cl, run_dir)
 
     try:
-        # cached 判定必须在提取/识别前完成——识别会写出侧车，事后判断会把
-        # 本 run 刚发布的目标误计为 cached；cached 记 skipped，由 run_logger 汇总
+        # cached must be decided before extraction/identification — identification
+        # writes sidecars; deciding afterwards would count targets this very run
+        # just published as cached; cached targets are recorded skipped and summed
+        # up by run_logger
         cached_set = {t for t in targets
                       if not args.force
                       and Path(str(t) + ".publish.json").exists()}
@@ -269,7 +265,7 @@ def cmd_scan(args) -> int:
         _save(cl, run_dir)
         work = [t for t in targets if t not in cached_set]
 
-        # 提取（每目标独立传出目录，并发安全）
+        # extraction (per-target out dir; concurrency-safe)
         ex_map: dict[Path, tuple[dict | None, str | None]] = {}
         if work:
             timeout_s = cfg.get("limits", {}).get("extract_timeout_s", 1800)
@@ -284,7 +280,7 @@ def cmd_scan(args) -> int:
                     pkg["extract"].update(phase=PH_FAIL, detail=err)
             _save(cl, run_dir)
 
-        # 识别（同一并发单值）
+        # identification (same single concurrency value)
         id_targets = [t for t in work
                       if not (t in ex_map and ex_map[t][0] is None)]
         if id_targets:
@@ -297,7 +293,7 @@ def cmd_scan(args) -> int:
     except KeyboardInterrupt:
         cl["status"] = "interrupted"
         _save(cl, run_dir)
-        print(f"中断：现场已存档（run {run_dir.name}）")
+        print(f"interrupted: scene archived (run {run_dir.name})")
         print(run_logger.run_report(run_dir))
         return 130
 
@@ -307,7 +303,7 @@ def cmd_scan(args) -> int:
     return 0
 
 
-# ---------- 只读命令（读 .publish.json） ----------
+# ---------- read-only commands (read .publish.json) ----------
 
 def _load_publish(target: Path) -> tuple[Path, dict] | None:
     sp = Path(str(target) + ".publish.json") if target.is_file() \
@@ -326,7 +322,7 @@ def cmd_show(args) -> int:
         else:
             got = _load_publish(target)
             if not got:
-                print(f"无侧车: {target}.publish.json")
+                print(f"no sidecar: {target}.publish.json")
                 return 1
             docs.append(got)
     else:
@@ -334,24 +330,23 @@ def cmd_show(args) -> int:
             docs.append((sp, json.loads(sp.read_text(encoding="utf-8-sig"))))
     for sp, doc in docs:
         print(f"== {sp.name} ==")
-        zh = lambda k: SHOW_ZH.get(k, k)
         a, s, i = doc["anchoring"], doc["scrape"], doc["identity"]
-        print(f"  {zh('title')}: {i['title'] or '(未识别)'}")
-        print(f"  {zh('category')}: {i['category']}   {zh('confidence')}: "
-              f"{s['confidence']:.2f}   {zh('depth')}: {s['depth']}")
-        print(f"  {zh('tags')}: {'、'.join(i['tags'])}")
-        print(f"  {zh('summary')}: {i['summary']}")
-        print(f"  {zh('source_path')}: {a['source_path']}")
-        print(f"  {zh('scraped_at')}: {s['scraped_at']}   {zh('engine')}: {s['engine']}")
+        print(f"  title: {i['title'] or '(unidentified)'}")
+        print(f"  category: {i['category']}   confidence: "
+              f"{s['confidence']:.2f}   depth: {s['depth']}")
+        print(f"  tags: {', '.join(i['tags'])}")
+        print(f"  summary: {i['summary']}")
+        print(f"  source_path: {a['source_path']}")
+        print(f"  scraped_at: {s['scraped_at']}   engine: {s['engine']}")
         flags = doc["flags"]
-        marks = [n for n, on in (("加密", flags["password_protected"]),
-                                 ("含exe", flags["exe_present"]),
-                                 ("含宏文档", flags["macro_docs"]),
-                                 ("分卷", flags["multi_part"])) if on]
+        marks = [n for n, on in (("encrypted", flags["password_protected"]),
+                                 ("has exe", flags["exe_present"]),
+                                 ("macro docs", flags["macro_docs"]),
+                                 ("multi-part", flags["multi_part"])) if on]
         if marks:
-            print(f"  标记: {'、'.join(marks)}")
+            print(f"  flags: {', '.join(marks)}")
         if doc["warnings"]:
-            print("  警告:")
+            print("  warnings:")
             for w in doc["warnings"][:5]:
                 print(f"    - {w}")
         print()
@@ -364,26 +359,26 @@ def cmd_check(args) -> int:
     for t in targets:
         got = _load_publish(t)
         if not got:
-            print(f"未刮削: {t}")
+            print(f"unscraped: {t}")
             problems += 1
             continue
         sp, doc = got
         errs = schema.validate(doc)
         if errs:
-            print(f"侧车非法: {sp}: {errs}")
+            print(f"invalid sidecar: {sp}: {errs}")
             problems += 1
             continue
         if doc["anchoring"]["sha256"] != sha256_file(t):
-            print(f"哈希不匹配（文件已变化）: {t}")
+            print(f"hash mismatch (file changed): {t}")
             problems += 1
         if doc["scrape"]["confidence"] < schema.LOW_CONFIDENCE:
-            print(f"低置信: {t} ({doc['scrape']['confidence']:.2f})")
+            print(f"low confidence: {t} ({doc['scrape']['confidence']:.2f})")
     orphans = [p for p in Path(args.path).glob("*.publish.json")
                if not Path(str(p)[:-len(".publish.json")]).exists()]
     for o in orphans:
-        print(f"孤儿侧车（无对应目标文件）: {o}")
+        print(f"orphan sidecar (no target file): {o}")
         problems += 1
-    print(f"\n体检完成: {len(targets)} 个目标, 孤儿 {len(orphans)}")
+    print(f"\ncheck complete: {len(targets)} targets, {len(orphans)} orphans")
     return 1 if problems else 0
 
 
@@ -408,34 +403,38 @@ def cmd_export(args) -> int:
             }
             out.write(json.dumps(slim, ensure_ascii=False) + "\n")
             count += 1
-    print(f"导出 {count} 条 → {out_path}")
+    print(f"exported {count} records → {out_path}")
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="scraper", description="压缩包/文件 AI 刮削识别")
+    ap = argparse.ArgumentParser(prog="scraper",
+                                 description="archive/file AI scraping & recognition")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("scan", help="批量刮削（任意文件）")
-    p.add_argument("path", help="文件或目录")
-    p.add_argument("--force", action="store_true", help="已有侧车也强制重刮")
-    p.add_argument("--config", help="AI 配置文件路径（默认 jsons/scraper.json）")
+    p = sub.add_parser("scan", help="batch scrape (any files)")
+    p.add_argument("path", help="file or directory")
+    p.add_argument("--force", action="store_true",
+                   help="rescan even if a sidecar already exists")
+    p.add_argument("--config", help="AI config file path (default jsons/scraper.json)")
     p.add_argument("--extractor", default="default",
-                   help="提取器名（extractors/ 目录下目录名或文件名，默认 default）")
-    p.add_argument("--no-recurse", action="store_true", help="不递归子目录")
+                   help="extractor name (directory or file under extractors/, default: default)")
+    p.add_argument("--no-recurse", action="store_true",
+                   help="do not recurse into subdirectories")
     p.add_argument("--workers", type=int,
-                   help="本次运行覆盖 concurrency（不传则用 scraper.json）")
+                   help="override concurrency for this run (defaults to scraper.json)")
     p.set_defaults(func=cmd_scan)
 
-    p = sub.add_parser("show", help="中文映射展示侧车")
+    p = sub.add_parser("show", help="display sidecars")
     p.add_argument("path")
     p.set_defaults(func=cmd_show)
 
-    p = sub.add_parser("check", help="体检：缺失/哈希不匹配/低置信/孤儿")
+    p = sub.add_parser("check",
+                       help="health check: missing / hash mismatch / low confidence / orphans")
     p.add_argument("path")
     p.set_defaults(func=cmd_check)
 
-    p = sub.add_parser("export", help="汇总导出 JSONL")
+    p = sub.add_parser("export", help="export digest as JSONL")
     p.add_argument("path")
     p.add_argument("-o", "--output", required=True)
     p.set_defaults(func=cmd_export)

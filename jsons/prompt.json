@@ -1,6 +1,6 @@
 {
   "registry_version": "2.0",
-  "_readme": "提示词注册表：会话引擎按 key 取用，代码零硬编码文案。text 中的 {page_chars}/{max_turns}/{catalog}/{hint}/{depth}/{tail_page}/{page_no}/{page_text}/{attempt_left} 为占位符。",
+  "_readme": "Prompt registry: the session engine looks prompts up by key; zero hardcoded copy in code. {page_chars}/{max_turns}/{catalog}/{hint}/{depth}/{tail_page}/{page_no}/{page_text}/{attempt_left} in text are placeholders.",
   "contract": {
     "name": "archive_control",
     "strict": true,
@@ -35,39 +35,39 @@
   "prompts": {
     "system": {
       "role": "system",
-      "text": "你是压缩包内容分析器。证据资料已按页摆放，你通过 JSON 契约与宿主沟通：\n请求翻页: {\"action\":\"read_page\",\"page\":页号,\"identity\":null}\n发布结论: {\"action\":\"publish\",\"page\":null,\"identity\":{\"title\",\"category\",\"summary\",\"tags\",\"language\",\"confidence\"}}\nidentity 字段：title(简洁名称)、category(dataset/media/software/documents/mixed/unknown)、summary(两到三句话)、tags(标签数组)、language(语言代码数组)、confidence(0到1的小数)。证据不足时 category 用 unknown 且 confidence 降低。只输出一个 JSON 对象。"
+      "text": "You are an archive content analyzer. Evidence material is laid out page by page; you communicate with the host through a JSON contract:\nRequest a page: {\"action\":\"read_page\",\"page\":<page number>,\"identity\":null}\nPublish a conclusion: {\"action\":\"publish\",\"page\":null,\"identity\":{\"title\",\"category\",\"summary\",\"tags\",\"language\",\"confidence\"}}\nidentity fields: title (concise name), category (dataset/media/software/documents/mixed/unknown), summary (two or three sentences), tags (array of tags), language (array of language codes), confidence (decimal from 0 to 1). When evidence is insufficient, use category unknown and lower the confidence. Output exactly one JSON object."
     },
     "first": {
       "role": "user",
-      "text": "请根据分页证据判断这个目标是什么。\n识别深度: {depth}\n程序预判大类（仅供参考，可推翻）: {hint}\n上下文共 {max_turns} 轮沟通机会，每页约 {page_chars} 字符。\n\n===== 末尾页（元数据，默认先读） =====\n{tail_page}\n\n===== 目录页 =====\n{catalog}\n\n证据足够后立即用 publish 发布，不要无意义地遍历所有页。"
+      "text": "Determine what this target is from the paged evidence.\nRecognition depth: {depth}\nProgram pre-class guess (reference only, may be overridden): {hint}\nYou have {max_turns} turns of communication in total; each page is about {page_chars} characters.\n\n===== Last page (metadata, read first by default) =====\n{tail_page}\n\n===== Catalog page =====\n{catalog}\n\nOnce the evidence suffices, publish immediately; do not traverse every page needlessly."
     },
     "page_deliver": {
       "role": "user",
-      "text": "===== 第{page_no}页 =====\n{page_text}"
+      "text": "===== Page {page_no} =====\n{page_text}"
     },
     "remind": {
       "role": "system",
-      "text": "提醒：上下文接近耗尽，请尽快收敛并 publish。"
+      "text": "Reminder: the context window is nearly exhausted; converge and publish soon."
     },
     "force_publish": {
       "role": "user",
-      "text": "上下文已达上限，立即用 publish 发布结论。"
+      "text": "The context limit has been reached; publish your conclusion via publish now."
     },
     "force_publish_only": {
       "role": "user",
-      "text": "只能 publish，禁止 read_page。立即发布结论。"
+      "text": "Only publish is allowed; read_page is forbidden. Publish your conclusion now."
     },
     "bad_json_retry": {
       "role": "user",
-      "text": "上次输出不是合法契约 JSON（剩余容忍 {attempt_left} 次），请重新输出。"
+      "text": "Your previous output was not valid contract JSON ({attempt_left} tolerances left); please output it again."
     },
     "dup_page": {
       "role": "user",
-      "text": "{why}，请选其他页或直接 publish。"
+      "text": "{why}; choose another page or publish directly."
     },
     "stall_to_publish": {
       "role": "user",
-      "text": "检测到翻页停滞，立即用 publish 发布当前结论。"
+      "text": "Page-turning has stalled; publish your current conclusion via publish now."
     }
   }
 }

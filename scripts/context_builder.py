@@ -1,7 +1,9 @@
-"""context_builder.py — 打包器：只读 extracted/ 目录 → context.json。
+"""context_builder.py — packer: reads only the extracted/ directory → context.json.
 
-分页规则：句子切分、页界软化（对齐句末）、单句超 page_chars*sentence_max_ratio
-整句跳过；files_index 记录每文件起始索引与页号；tail_page 元数据页放末尾。
+Paging rules: sentence splitting, page-boundary softening (aligned to sentence
+ends), sentences longer than page_chars*sentence_max_ratio skipped whole;
+files_index records each file's start index and page; the tail_page metadata
+page goes last.
 """
 from __future__ import annotations
 
@@ -30,13 +32,13 @@ def _looks_binary(data: bytes) -> bool:
 
 
 def _split_sentences(text: str) -> list[str]:
-    """按句界符切分，保留分隔符在句尾。"""
+    """Split on sentence delimiters, keeping the delimiter at the sentence end."""
     return [p for p in re.split(r"(?<=[。！？!?.；;\n])", text) if p.strip()]
 
 
 def read_text_blocks(extracted_dir: str | Path,
                      max_text_file_bytes: int) -> list[dict]:
-    """遍历 extracted/，产出文本块。返回 [{file, text, size}]（binary 只登记）。"""
+    """Walk extracted/ and produce text blocks. Returns [{file, text, size}] (binary registered only)."""
     base = Path(extracted_dir)
     blocks: list[dict] = []
     files = sorted(p for p in base.rglob("*")
@@ -54,24 +56,24 @@ def read_text_blocks(extracted_dir: str | Path,
                     continue
             except OSError:
                 pass
-        blocks.append({"file": rel, "text": "", "size": size})  # binary/大文件仅登记
+        blocks.append({"file": rel, "text": "", "size": size})  # binary/oversize: register only
     return blocks
 
 
 def _tail_page(blocks: list[dict]) -> str:
-    """末尾元数据页：文件索引 + 结构统计（只由 extracted/ 目录算出）。"""
+    """Trailing metadata page: file index + structure stats (derived solely from the extracted/ directory)."""
     total = len(blocks)
     total_bytes = sum(b["size"] for b in blocks)
     exts: dict[str, int] = {}
     for b in blocks:
-        e = os.path.splitext(b["file"])[1].lower() or "(无)"
+        e = os.path.splitext(b["file"])[1].lower() or "(none)"
         exts[e] = exts.get(e, 0) + 1
     top_exts = dict(sorted(exts.items(), key=lambda kv: -kv[1])[:20])
-    lines = [f"【元数据页】文件数: {total}, 总字节: {total_bytes}",
-             f"扩展名统计: {top_exts}",
-             "文件索引（起始索引=内容字符偏移；binary 文件无正文）:"]
+    lines = [f"[Metadata page] files: {total}, total bytes: {total_bytes}",
+             f"Extension stats: {top_exts}",
+             "File index (start index = character offset into content; binary files have no text):"]
     for b in blocks:
-        kind = f"{b['size']}B" if not b["text"] else f"{len(b['text'])}字"
+        kind = f"{b['size']}B" if not b["text"] else f"{len(b['text'])} chars"
         lines.append(f"  - {b['file']} ({kind})")
     return "\n".join(lines)
 
@@ -79,11 +81,11 @@ def _tail_page(blocks: list[dict]) -> str:
 def build(extracted_dir: str | Path, page_chars: int,
           max_text_file_bytes: int = 33554432,
           sentence_max_ratio: float = 0.1) -> dict:
-    """主入口：extracted/ → context dict（供序列化为 context.json）。"""
+    """Main entry: extracted/ → context dict (for serialization into context.json)."""
     blocks = read_text_blocks(extracted_dir, max_text_file_bytes)
     tail = _tail_page(blocks)
 
-    max_sent = int(page_chars * sentence_max_ratio)   # 单句上限
+    max_sent = int(page_chars * sentence_max_ratio)   # per-sentence cap
     page_texts: list[str] = []
     cur: list[str] = []
     cur_chars = 0
@@ -97,7 +99,7 @@ def build(extracted_dir: str | Path, page_chars: int,
             cur, cur_chars = [], 0
 
     def _cursor(page_no: int, offset_in_page: int) -> int:
-        """字符起始索引 = 之前所有页长度(含页间分隔符) + 页内偏移。"""
+        """Start index = lengths of all previous pages (incl. page separators) + offset within the page."""
         return sum(len(t) + 1 for t in page_texts[:page_no - 1]) + offset_in_page
 
     for b in blocks:
@@ -125,11 +127,11 @@ def build(extracted_dir: str | Path, page_chars: int,
                     **({} if b["text"] else {"size": b["size"]})}
                    for b in blocks]
 
-    # 目录页
-    cat = [f"目录页：共 {len(page_texts)} 个内容页（末尾页为元数据页，已默认展示）。"]
+    # catalog page
+    cat = [f"Catalog: {len(page_texts)} content pages (the last page is the metadata page, shown by default)."]
     for i, pg in enumerate(page_texts, 1):
-        first = next((ln for ln in pg.splitlines() if ln.strip()), "(空)")
-        cat.append(f"  第{i}页: {first[:80]}")
+        first = next((ln for ln in pg.splitlines() if ln.strip()), "(empty)")
+        cat.append(f"  Page {i}: {first[:80]}")
     cat.append(tail)
 
     return {

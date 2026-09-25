@@ -1,12 +1,16 @@
-"""extractors/default — 默认提取器（环2，可插拔；每个提取器一个自持目录）。
+"""extractors/default — default extractor (pluggable; one self-contained directory per extractor).
 
-CLI 契约：传入路径（单文件）+ 传出路径（目录）；可并发（每目标独立传出目录）。
-自持性：只依赖 uv 环境内的第三方库，不 import 项目外围模块；
-密码自持——从本目录 password.json 读取（{"passwords": ["...", ...]}）。
-行为在本脚本内定死（不接线）：压缩包（zip/7z）全量解压保留原始文件，
-普通文件直接复制；沙箱防越界；zip 炸弹护栏（总量/条目数上限）。
-由 scripts/run_extractor.py 加载执行，结果 dict 经运行器落 _result.json。
-下游 context 组织器只读传出目录，与本结果 dict 解耦。
+CLI contract: an incoming path (single file) + an outgoing directory;
+concurrency-safe (each target gets its own out dir).
+Self-contained: depends only on third-party packages in the uv environment,
+never imports project modules; holds its own passwords — read from password.json
+in this directory ({"passwords": ["...", ...]}).
+Behavior is fixed in this script (not wired to config): archives (zip/7z) are
+fully extracted with original files preserved; plain files are copied as-is;
+sandboxed against path escape; zip-bomb guardrails (total size / entry caps).
+Loaded and executed by scripts/run_extractor.py; the result dict lands in
+_result.json via the runner.
+The downstream context packer reads only the out dir, decoupled from this dict.
 """
 from __future__ import annotations
 
@@ -31,12 +35,12 @@ HERE = Path(__file__).resolve().parent
 ARCHIVE_EXTS = {".zip", ".7z"}
 NOTABLE_NAME_RE = re.compile(r"(readme|说明|index|manifest|license|changelog)", re.I)
 
-# 脚本内定死的护栏（不接线）
-MAX_TOTAL_UNCOMPRESSED = 4 * 1024 ** 3   # 解压总量上限 4GB
-MAX_ENTRIES = 50000                      # 条目数上限
+# guardrails fixed in-script (not wired to config)
+MAX_TOTAL_UNCOMPRESSED = 4 * 1024 ** 3   # total uncompressed cap: 4GB
+MAX_ENTRIES = 50000                      # entry count cap
 
 
-# ---------- 内聚哈希（不引用外围） ----------
+# ---------- self-contained hashing (no external imports) ----------
 
 def sha256_file(path, buf: int = 1 << 20) -> str:
     h = hashlib.sha256()
@@ -50,7 +54,7 @@ def entry_id_for(path) -> str:
     return sha256_file(path)[:8]
 
 
-# ---------- 自持密码 ----------
+# ---------- self-held passwords ----------
 
 def load_passwords() -> list[str]:
     pw_path = HERE / "password.json"
@@ -62,7 +66,7 @@ def load_passwords() -> list[str]:
 
 
 def _safe_join(base: Path, name: str) -> Path | None:
-    """归一化成员路径，越界返回 None。"""
+    """Normalize a member path; returns None if it escapes the base."""
     norm = name.replace("\\", "/").lstrip("/")
     if any(p == ".." for p in norm.split("/")) or ":" in norm:
         return None
@@ -70,7 +74,7 @@ def _safe_join(base: Path, name: str) -> Path | None:
     return p if str(p).startswith(str(base.resolve())) else None
 
 
-# ---------- 清单统计 ----------
+# ---------- listing stats ----------
 
 def _stats_from_names(names: list[str], total_uncompressed: int,
                       password_protected: bool) -> dict:
@@ -105,7 +109,7 @@ def _list_zip(path: str, log: list[str]) -> dict:
     except zipfile.BadZipFile:
         if pyzipper is None:
             raise
-        log.append("zipfile 打不开，尝试 pyzipper（AES zip）")
+        log.append("zipfile failed to open; trying pyzipper (AES zip)")
         zf = pyzipper.AESZipFile(path)
     with zf:
         infos = zf.infolist()
@@ -117,7 +121,7 @@ def _list_zip(path: str, log: list[str]) -> dict:
 
 def _list_7z(path: str, log: list[str]) -> dict:
     if py7zr is None:
-        raise RuntimeError("py7zr 未安装，无法处理 7z")
+        raise RuntimeError("py7zr not installed; cannot handle 7z")
     with py7zr.SevenZipFile(path) as z:
         names = z.getnames()
         total = sum(e.uncompressed for e in z.list() if not e.is_directory)
@@ -125,7 +129,7 @@ def _list_7z(path: str, log: list[str]) -> dict:
     return _stats_from_names(names, total, protected)
 
 
-# ---------- 密码轮询 ----------
+# ---------- password polling ----------
 
 def poll_zip_password(path: str, passwords: list[str], log: list[str]) -> str | None:
     if pyzipper is None:
@@ -143,7 +147,7 @@ def poll_zip_password(path: str, passwords: list[str], log: list[str]) -> str | 
             try:
                 with zf.open(target, pwd=pw.encode("utf-8")) as f:
                     f.read(16)
-                log.append(f"密码轮询命中（第 {passwords.index(pw)+1} 个候选）")
+                log.append(f"password hit (candidate #{passwords.index(pw) + 1})")
                 return pw
             except Exception:
                 continue
@@ -157,21 +161,21 @@ def poll_7z_password(path: str, passwords: list[str], log: list[str]) -> str | N
         try:
             with py7zr.SevenZipFile(path, password=pw) as z:
                 z.read(targets=[z.getnames()[0]])
-            log.append(f"密码轮询命中（第 {passwords.index(pw)+1} 个候选）")
+            log.append(f"password hit (candidate #{passwords.index(pw) + 1})")
             return pw
         except Exception:
             continue
     return None
 
 
-# ---------- 主入口 ----------
+# ---------- main entry ----------
 
 def extract(path: str, out_dir: str | Path,
             passwords: list[str] | None = None) -> dict:
-    """环2 主入口：任意路径 → extracted/<entry_id>/ + 结果 dict。
+    """Main entry: any path → extracted/<entry_id>/ + result dict.
 
-    压缩包：全量解压（原始文件保留）；普通文件：直接复制。
-    密码候选默认读本目录 password.json。
+    Archives: fully extracted (original files preserved); plain files: copied as-is.
+    Password candidates default to this directory's password.json.
     """
     log: list[str] = []
     passwords = passwords if passwords is not None else load_passwords()
@@ -180,7 +184,7 @@ def extract(path: str, out_dir: str | Path,
     sha = sha256_file(path)
 
     if ext not in ARCHIVE_EXTS:
-        # 普通文件：直接复制
+        # plain file: copy as-is
         out.mkdir(parents=True, exist_ok=True)
         dest = out / os.path.basename(path)
         if Path(path).resolve() != dest.resolve():
@@ -191,25 +195,25 @@ def extract(path: str, out_dir: str | Path,
                 "structure": st, "password_found": False,
                 "warnings": log, "files_kept": 1}
 
-    # 压缩包
+    # archive
     if ext == ".zip":
         st = _list_zip(path, log)
     else:
         if py7zr is None:
-            raise RuntimeError("py7zr 未安装，无法处理 7z")
+            raise RuntimeError("py7zr not installed; cannot handle 7z")
         st = _list_7z(path, log)
 
     if st["entry_count"] > MAX_ENTRIES:
-        raise ValueError(f"条目数 {st['entry_count']} 超上限 {MAX_ENTRIES}，拒绝解压")
+        raise ValueError(f"entry count {st['entry_count']} exceeds cap {MAX_ENTRIES}; refusing to extract")
     if st["total_uncompressed"] > MAX_TOTAL_UNCOMPRESSED:
-        raise ValueError(f"解压总量 {st['total_uncompressed']} 超上限，拒绝解压")
+        raise ValueError("total uncompressed size exceeds cap; refusing to extract")
 
     password = None
     if st["password_protected"] and passwords:
         poller = poll_zip_password if ext == ".zip" else poll_7z_password
         password = poller(path, passwords, log)
     if st["password_protected"] and password is None:
-        log.append("加密包无可用密码，解压中止（仅登记元数据）")
+        log.append("no working password for encrypted archive; extraction aborted (metadata only)")
         return {"entry_id": sha[:8], "kind": "archive", "sha256": sha,
                 "structure": st, "password_found": False,
                 "warnings": log, "files_kept": 0}
@@ -222,7 +226,7 @@ def extract(path: str, out_dir: str | Path,
             for info in zf.infolist():
                 dest = _safe_join(out, info.filename)
                 if dest is None:
-                    log.append(f"越界成员已跳过: {info.filename}")
+                    log.append(f"escaped member skipped: {info.filename}")
                     continue
                 if info.is_dir():
                     dest.mkdir(parents=True, exist_ok=True)
@@ -235,17 +239,17 @@ def extract(path: str, out_dir: str | Path,
     else:
         with py7zr.SevenZipFile(path, password=password) as z:
             names = z.getnames()
-            # 成员级净化：越界/坏名（如 "."、".."、绝对路径）剔除
+            # member-level sanitization: escaping/bad names (".", "..", absolute paths) dropped
             valid = [n for n in names if _safe_join(out, n) is not None
                      and _safe_join(out, n) != out.resolve()]
             skipped = [n for n in names if n not in valid]
             for n in skipped:
-                log.append(f"越界成员已跳过: {n}")
+                log.append(f"escaped member skipped: {n}")
             try:
                 z.extract(path=out, targets=valid)
                 kept = len(valid)
             except Exception as e:
-                # 批量被个别坏成员阻断时，回退逐成员提取
+                # bulk blocked by a single bad member: fall back to per-member extraction
                 if len(valid) > 1 and type(e).__name__ == "Bad7zFile":
                     kept = 0
                     for n in valid:
@@ -253,7 +257,7 @@ def extract(path: str, out_dir: str | Path,
                             z.extract(path=out, targets=[n])
                             kept += 1
                         except Exception:
-                            log.append(f"成员提取失败已跳过: {n}")
+                            log.append(f"member extraction failed, skipped: {n}")
                 else:
                     raise
 
