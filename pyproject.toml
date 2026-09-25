@@ -1,0 +1,12 @@
+[project]
+name = "archive-scraper"
+version = "0.1.0"
+description = "压缩包 AI 刮削识别"
+requires-python = ">=3.12"
+dependencies = [
+    "py7zr>=1.1",
+    "pyzipper>=0.3",
+]
+
+[project.scripts]
+scraper = "cli:main"
