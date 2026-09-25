@@ -16,7 +16,7 @@ from pathlib import Path
 
 import extractor
 import sidecar
-from ai_identify import identify, LOW_CONFIDENCE, MODEL
+from ai_identify import identify, load_config, LOW_CONFIDENCE
 from schema import SCHEMA_VERSION, validate
 
 ARCHIVE_EXTS = {".zip", ".7z"}
@@ -54,7 +54,7 @@ def load_passwords(pwfile: str | None) -> list[str]:
 
 
 def scrape_one(archive: Path, depth: str, passwords: list[str],
-               force: bool, model: str) -> dict:
+               force: bool, ai_cfg: dict) -> dict:
     """刮削单个包，返回运行记录（含 outcome）。"""
     rec = {"path": str(archive), "outcome": "", "detail": ""}
     try:
@@ -70,7 +70,8 @@ def scrape_one(archive: Path, depth: str, passwords: list[str],
             return rec
 
         ex = extractor.extract(str(archive), depth=depth, passwords=passwords)
-        identity, confidence, ai_warnings = identify(ex, model=model)
+        identity, confidence, ai_warnings = identify(ex, cfg=ai_cfg)
+        engine = f"{ai_cfg.get('provider', 'custom')}:{ai_cfg.get('model') or 'auto'}"
 
         doc = {
             "schema_version": SCHEMA_VERSION,
@@ -82,7 +83,7 @@ def scrape_one(archive: Path, depth: str, passwords: list[str],
             },
             "scrape": {
                 "scraped_at": datetime.now().astimezone().isoformat(),
-                "engine": model,
+                "engine": engine,
                 "depth": ex["depth"],
                 "confidence": confidence,
             },
@@ -111,6 +112,7 @@ def scrape_one(archive: Path, depth: str, passwords: list[str],
 def cmd_scan(args) -> int:
     depth = args.depth
     passwords = load_passwords(args.pwfile)
+    ai_cfg = load_config(args.config)
     target = Path(args.path)
     if target.is_file():
         archives = [target]
@@ -123,7 +125,7 @@ def cmd_scan(args) -> int:
     counters = {"ok": 0, "skip": 0, "skip+pathfix": 0, "fail": 0}
     low_conf: list[str] = []
     for i, a in enumerate(archives, 1):
-        rec = scrape_one(a, depth, passwords, args.force, args.model)
+        rec = scrape_one(a, depth, passwords, args.force, ai_cfg)
         counters[rec["outcome"]] = counters.get(rec["outcome"], 0) + 1
         mark = {"ok": "+", "skip": "=", "skip+pathfix": "~", "fail": "!"}[rec["outcome"]]
         print(f"[{i}/{len(archives)}] {mark} {a.name}  {rec['detail']}")
@@ -254,7 +256,7 @@ def main(argv: list[str] | None = None) -> int:
                    default="listing+sample")
     p.add_argument("--pwfile", help="密码文件（一行一个）")
     p.add_argument("--force", action="store_true", help="忽略缓存强制重刮")
-    p.add_argument("--model", default=MODEL, help=f"Ollama 模型名（默认 {MODEL}）")
+    p.add_argument("--config", help="AI 配置文件路径（默认 scraper.json）")
     p.add_argument("--no-recurse", action="store_true", help="不递归子目录")
     p.set_defaults(func=cmd_scan)
 
