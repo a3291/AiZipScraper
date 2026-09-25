@@ -1,14 +1,17 @@
-"""main.py — 项目统一入口。
+"""main.py — unified project entry.
 
-用法与 cli.py 完全一致：
-    uv run python main.py scan <路径> [--pwfile ...] [--force] [--config ...]
-    uv run python main.py show <路径>
-    uv run python main.py check <路径>
-    uv run python main.py export <路径> -o 汇总.jsonl
+Usage is identical to scripts/cli.py:
+    uv run python main.py scan <path> [--force] [--extractor ...] [--config ...]
+    uv run python main.py show <path>
+    uv run python main.py check <path>
+    uv run python main.py export <path> -o digest.jsonl
 """
 import sys
+from pathlib import Path
 
-from cli import main
+sys.path.insert(0, str(Path(__file__).resolve().parent / "scripts"))
+
+from cli import main  # noqa: E402
 
 if __name__ == "__main__":
     sys.exit(main())
