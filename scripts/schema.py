@@ -1,7 +1,6 @@
 """schema.py — 侧车契约单源：大类枚举、低置信阈值、校验。
 
-CATEGORIES/LOW_CONFIDENCE 是全项目唯一来源（ai_identify、prompt.json 校验均引用）。
-字段名英文（机器友好），展示层由 cli.show 做中文映射。
+字段名英文（机器友好）。
 """
 from __future__ import annotations
 
@@ -9,7 +8,6 @@ CATEGORIES = ["dataset", "media", "software", "documents", "mixed", "unknown"]
 
 LOW_CONFIDENCE = 0.6   # 低于此值在 warnings/报告中标"建议人工复核"
 
-# 用于 Ollama structured output 的 JSON Schema（identity + confidence 部分）
 IDENTITY_JSON_SCHEMA = {
     "type": "object",
     "properties": {
@@ -22,48 +20,6 @@ IDENTITY_JSON_SCHEMA = {
     },
     "required": ["title", "category", "summary", "tags", "language", "confidence"],
 }
-
-
-def empty_document() -> dict:
-    """构造一份空白但结构完整的侧车文档。"""
-    return {
-        "anchoring": {
-            "sha256": "",
-            "source_path": "",
-            "file_size": 0,
-            "mtime": "",
-        },
-        "scrape": {
-            "scraped_at": "",
-            "engine": "",
-            "depth": "listing",
-            "confidence": 0.0,
-        },
-        "identity": {
-            "title": "",
-            "category": "unknown",
-            "summary": "",
-            "tags": [],
-            "language": [],
-        },
-        "structure": {
-            "entry_count": 0,
-            "dir_count": 0,
-            "total_uncompressed": 0,
-            "top_extensions": {},
-            "top_level_dirs": [],
-            "notable_files": [],
-        },
-        "sample_evidence": [],
-        "flags": {
-            "password_protected": False,
-            "multi_part": False,
-            "nested_archives": [],
-            "exe_present": False,
-            "macro_docs": False,
-        },
-        "warnings": [],
-    }
 
 
 def validate(doc: dict) -> list[str]:

@@ -9,19 +9,18 @@
 from __future__ import annotations
 
 import json
+import os
 import re
-import time
+import threading
 from datetime import datetime
 from pathlib import Path
 
 import backend
-import schema
 import paths
-from backend import PROVIDER_DEFAULTS
+import schema
 
 CATEGORIES = schema.CATEGORIES
 LOW_CONFIDENCE = schema.LOW_CONFIDENCE
-
 JSONS = paths.JSONS
 
 REQUIRED_AI_KEYS = ["provider", "base_url", "model", "api_key", "temperature",
@@ -51,8 +50,8 @@ def load_config(path: str | None = None) -> dict:
         raise ValueError(f"scraper.json concurrency 必须为正整数（当前: {conc!r}）")
 
     cfg = dict(ai)
-    if cfg["provider"] in PROVIDER_DEFAULTS and not cfg["base_url"]:
-        cfg["base_url"] = PROVIDER_DEFAULTS[cfg["provider"]]
+    if cfg["provider"] in backend.PROVIDER_DEFAULTS and not cfg["base_url"]:
+        cfg["base_url"] = backend.PROVIDER_DEFAULTS[cfg["provider"]]
     cfg["concurrency"] = conc
     cfg["limits"] = dict(raw.get("limits") or {})
     return cfg
@@ -78,8 +77,6 @@ def load_prompts(path: str | None = None) -> dict:
     roles = {k: v.get("role", "user") for k, v in data["prompts"].items()}
     return {"contract": contract, "prompts": prompts, "roles": roles}
 
-
-# ---------- 主会话 ----------
 
 def _hint_from_extensions(exts: dict[str, int]) -> str:
     total = sum(exts.values()) or 1
@@ -120,12 +117,9 @@ def _estimate_tokens(messages: list[dict]) -> int:
 class MessageLog:
     """文件即真相：append 带锁重读-合并-原子写，支持 api 并发多实例。"""
 
-    _lock = None   # 类级锁，首个实例创建
+    _lock = threading.Lock()   # 类级锁
 
     def __init__(self, run_dir: Path, entry_id: str):
-        if MessageLog._lock is None:
-            import threading
-            MessageLog._lock = threading.Lock()
         self.path = run_dir / "messages.json"
         self.entry_id = entry_id
 
@@ -147,7 +141,6 @@ class MessageLog:
             tmp = self.path.with_suffix(".json.tmp")
             tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1),
                            encoding="utf-8")
-            import os
             os.replace(tmp, self.path)
 
     def count(self) -> int:
@@ -159,6 +152,15 @@ class MessageLog:
 
 # ---------- 主会话 ----------
 
+def _say(messages: list[dict], mlog: "MessageLog", R: dict, P: dict,
+         key: str, text: str | None = None) -> None:
+    """向会话追加一条提示词消息并同步落 messages.json（单点双写）。"""
+    role = R[key]
+    content = text if text is not None else P[key]
+    messages.append({"role": role, "content": content})
+    mlog.append(role, content, key)
+
+
 def run_session(context_pkg: dict, prompts: dict, cfg: dict,
                 mlog: MessageLog, hint_exts: dict[str, int] | None = None,
                 ) -> tuple[dict, float, list[str], dict]:
@@ -167,11 +169,14 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
     stats = {"pages": context_pkg["stats"]["page_count"], "pages_read": 0,
              "turns": 0, "tokens_in": 0, "tokens_out": 0}
 
+    def bail(reason: str):
+        return _fallback(reason), 0.0, warnings, stats
+
     if not backend.endpoint_available(cfg):
-        return _fallback(f"AI 后端不可用（{cfg['base_url']}）"), 0.0, warnings, stats
+        return bail(f"AI 后端不可用（{cfg['base_url']}）")
     model = backend.resolve_model(cfg)
     if model is None:
-        return _fallback(f"AI 后端无已加载模型（{cfg['base_url']}）"), 0.0, warnings, stats
+        return bail(f"AI 后端无已加载模型（{cfg['base_url']}）")
 
     P = prompts["prompts"]          # key -> text 模板
     R = prompts["roles"]            # key -> role
@@ -205,31 +210,27 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
     read_pages: set[int] = set()
     usage_tokens = 0
     pages = context_pkg["pages"]
-    tail = context_pkg["tail_page"]
 
     for turn in range(1, cfg["max_turns"] + 1):
         stats["turns"] = turn
         tokens = usage_tokens or _estimate_tokens(messages)
         if not forced and tokens >= cfg["force_publish_at"]:
-            messages.append({"role": R["force_publish"],
-                             "content": P["force_publish"]})
-            mlog.append(R["force_publish"], P["force_publish"], "force_publish")
+            _say(messages, mlog, R, P, "force_publish")
             forced = True
         elif not reminded and tokens >= cfg["remind_at"]:
-            messages.append({"role": R["remind"], "content": P["remind"]})
-            mlog.append(R["remind"], P["remind"], "remind")
+            _say(messages, mlog, R, P, "remind")
             reminded = True
 
         try:
-            t0 = time.monotonic()
-            resp = backend.post(url, {**payload_base, "messages": messages,
-                               "_api_key": cfg.get("api_key", "")}, cfg["timeout"])
-            stats["tokens_in"] = int((resp.get("usage") or {}).get("prompt_tokens", 0) or 0)
-            stats["tokens_out"] = int((resp.get("usage") or {}).get("completion_tokens", 0) or 0)
+            resp = backend.post(url, {**payload_base, "messages": messages},
+                                cfg["timeout"], cfg.get("api_key", ""))
+            usage = resp.get("usage") or {}
+            stats["tokens_in"] = usage.get("prompt_tokens", 0)
+            stats["tokens_out"] = usage.get("completion_tokens", 0)
             usage_tokens = stats["tokens_in"] + stats["tokens_out"]
             content = resp["choices"][0]["message"]["content"]
         except (OSError, KeyError, IndexError) as e:
-            return _fallback(f"AI 会话请求失败: {type(e).__name__}: {e}"), 0.0, warnings, stats
+            return bail(f"AI 会话请求失败: {type(e).__name__}: {e}")
         messages.append({"role": "assistant", "content": content})
         mlog.append("assistant", content)
 
@@ -237,17 +238,16 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         if out is None or out.get("action") not in ("read_page", "publish"):
             bad_json += 1
             if bad_json > 1:
-                return _fallback(f"AI 输出非法 control JSON（{bad_json} 次）"), 0.0, warnings, stats
-            txt = P["bad_json_retry"].format(attempt_left=2 - bad_json)
-            messages.append({"role": R["bad_json_retry"], "content": txt})
-            mlog.append(R["bad_json_retry"], txt, "bad_json_retry")
+                return bail(f"AI 输出非法 control JSON（{bad_json} 次）")
+            _say(messages, mlog, R, P, "bad_json_retry",
+                 P["bad_json_retry"].format(attempt_left=2 - bad_json))
             continue
         action = out["action"]
 
         if action == "publish":
             ident = out.get("identity")
             if not isinstance(ident, dict):
-                return _fallback("publish 缺少 identity 对象"), 0.0, warnings, stats
+                return bail("publish 缺少 identity 对象")
             identity, conf, vw = _validate_identity(ident)
             warnings.extend(vw)
             return identity, conf, warnings, stats
@@ -258,35 +258,26 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         if forced:
             forced_retries += 1
             if forced_retries > 2:
-                return _fallback("强制发布后仍多次翻页，放弃识别"), 0.0, warnings, stats
-            messages.append({"role": R["force_publish_only"],
-                             "content": P["force_publish_only"]})
-            mlog.append(R["force_publish_only"], P["force_publish_only"],
-                        "force_publish_only")
+                return bail("强制发布后仍多次翻页，放弃识别")
+            _say(messages, mlog, R, P, "force_publish_only")
             continue
         if not valid or page in read_pages:
             dupes += 1
             if dupes >= 2:
-                messages.append({"role": R["stall_to_publish"],
-                                 "content": P["stall_to_publish"]})
-                mlog.append(R["stall_to_publish"], P["stall_to_publish"],
-                            "stall_to_publish")
+                _say(messages, mlog, R, P, "stall_to_publish")
                 forced = True
             else:
                 why = "该页不存在" if not valid else "该页已读过"
-                txt = P["dup_page"].format(why=why)
-                messages.append({"role": R["dup_page"], "content": txt})
-                mlog.append(R["dup_page"], txt, "dup_page")
+                _say(messages, mlog, R, P, "dup_page", P["dup_page"].format(why=why))
             continue
         read_pages.add(page)
         stats["pages_read"] = len(read_pages)
         dupes = 0
-        body = pages[page - 1]["text"] if page <= len(pages) else tail["text"]
-        txt = P["page_deliver"].format(page_no=page, page_text=body)
-        messages.append({"role": R["page_deliver"], "content": txt})
-        mlog.append(R["page_deliver"], txt, "page_deliver")
+        body = pages[page - 1]["text"]
+        _say(messages, mlog, R, P, "page_deliver",
+             P["page_deliver"].format(page_no=page, page_text=body))
 
-    return _fallback(f"达到 max_turns={cfg['max_turns']} 上限仍未发布"), 0.0, warnings, stats
+    return bail(f"达到 max_turns={cfg['max_turns']} 上限仍未发布")
 
 
 def _validate_identity(out: dict) -> tuple[dict, float, list[str]]:

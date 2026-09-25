@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 import paths
+import schema
 
 PH_ZH = {"done": "完成", "failed": "失败", "skipped": "跳过", "pending": "未动"}
 
@@ -74,7 +75,7 @@ def run_report(run_dir: Path) -> str:
         if ex.get("phase"):
             details.append(f"提取 {PH_ZH.get(ex['phase'], ex['phase'])}"
                            + (f" files_kept={ex['files_kept']}"
-                              if ex["phase"] == "done" and "files_kept" in ex
+                              if ex["phase"] == "done"
                               else "")
                            + (f" ({ex['detail']})" if ex.get("detail")
                               and ex["phase"] == "failed" else ""))
@@ -102,7 +103,7 @@ def run_report(run_dir: Path) -> str:
             try:
                 doc = json.loads(Path(side).read_text(encoding="utf-8-sig"))
                 c = doc.get("scrape", {}).get("confidence", 0.0)
-                if c < 0.6:
+                if c < schema.LOW_CONFIDENCE:
                     low_conf.append(f"{name} ({c:.2f})")
             except (OSError, json.JSONDecodeError, ValueError):
                 pass

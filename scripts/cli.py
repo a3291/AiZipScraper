@@ -25,7 +25,6 @@ import run_logger
 import schema
 from ai_identify import (MessageLog, datetime_now_iso,
                          load_config, load_prompts, run_session)
-from schema import LOW_CONFIDENCE   # cmd_check 低置信阈值（单源 schema.py）
 
 ROOT = paths.ROOT
 RUNS_DIR = paths.RUNS_DIR
@@ -377,7 +376,7 @@ def cmd_check(args) -> int:
         if doc["anchoring"]["sha256"] != sha256_file(t):
             print(f"哈希不匹配（文件已变化）: {t}")
             problems += 1
-        if doc["scrape"]["confidence"] < LOW_CONFIDENCE:
+        if doc["scrape"]["confidence"] < schema.LOW_CONFIDENCE:
             print(f"低置信: {t} ({doc['scrape']['confidence']:.2f})")
     orphans = [p for p in Path(args.path).glob("*.publish.json")
                if not Path(str(p)[:-len(".publish.json")]).exists()]

@@ -1,12 +1,12 @@
 """context_builder.py — 打包器：只读 extracted/ 目录 → context.json。
 
 分页规则：句子切分、页界软化（对齐句末）、单句超 page_chars*sentence_max_ratio
-整句跳过；护栏（max_text_file_bytes）由调用方从 scraper.json limits 传入。
-files_index 记录每文件起始索引与页号；tail_page 元数据页放末尾。
+整句跳过；files_index 记录每文件起始索引与页号；tail_page 元数据页放末尾。
 """
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 TEXT_EXTS = {
@@ -31,9 +31,7 @@ def _looks_binary(data: bytes) -> bool:
 
 def _split_sentences(text: str) -> list[str]:
     """按句界符切分，保留分隔符在句尾。"""
-    import re
-    parts = re.split(r"(?<=[。！？!?.；;\n])", text)
-    return [p for p in parts if p.strip()]
+    return [p for p in re.split(r"(?<=[。！？!?.；;\n])", text) if p.strip()]
 
 
 def read_text_blocks(extracted_dir: str | Path,
@@ -81,11 +79,7 @@ def _tail_page(blocks: list[dict]) -> str:
 def build(extracted_dir: str | Path, page_chars: int,
           max_text_file_bytes: int = 33554432,
           sentence_max_ratio: float = 0.1) -> dict:
-    """主入口：extracted/ → context dict（供序列化为 context.json）。
-
-    max_text_file_bytes/sentence_max_ratio 默认值仅供直调兜底，
-    scan 链路上一律由 scraper.json limits 传入。
-    """
+    """主入口：extracted/ → context dict（供序列化为 context.json）。"""
     blocks = read_text_blocks(extracted_dir, max_text_file_bytes)
     tail = _tail_page(blocks)
 

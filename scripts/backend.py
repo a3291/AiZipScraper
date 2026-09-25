@@ -19,10 +19,9 @@ def api_headers(api_key: str) -> dict:
             "Authorization": f"Bearer {api_key or 'none'}"}
 
 
-def post(url: str, payload: dict, timeout: int) -> dict:
+def post(url: str, payload: dict, timeout: int, api_key: str = "") -> dict:
     req = urllib.request.Request(
-        url, data=json.dumps(payload).encode("utf-8"),
-        headers=api_headers(payload.pop("_api_key", "none")))
+        url, data=json.dumps(payload).encode("utf-8"), headers=api_headers(api_key))
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
 

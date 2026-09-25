@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 EXTRACTORS = ROOT / "extractors"
 EXIT_ARGS, EXIT_FAIL = 2, 3
 
-# _result.json 契约：键 → 类型（dict 内部结构由提取器自责）
+# _result.json 契约：键 → 类型
 RESULT_REQUIRED_KEYS = {
     "entry_id": str, "kind": str, "sha256": str,
     "structure": dict, "password_found": bool,
@@ -85,9 +85,9 @@ def main(argv: list[str]) -> int:
         if mod is None or not hasattr(mod, "extract"):
             print(f"提取器不存在或缺 extract(): extractors/{name}", file=sys.stderr)
             return EXIT_FAIL
-        _heartbeat(out)                     # 心跳起手；成功后删除，残留=挂死现场
+        _heartbeat(out)
         result = mod.extract(in_path, out)
-        err = _validate_result(result)      # 契约硬化：源头校验，不合规不落盘
+        err = _validate_result(result)
         if err is not None:
             print(f"提取结果契约不合规: {err}", file=sys.stderr)
             return EXIT_FAIL
