@@ -1,4 +1,4 @@
-"""publisher.py — 环5 校验落盘：publish.json 模板 → 填充 → 校验 → <原名>.publish.json。
+"""publisher.py — 发布器：publish.json 模板 → 填充 → 校验 → <原名>.publish.json。
 
 合法性闸门：侧车只有一条生成路径且必经 schema 校验，非法不落盘。
 程序填 <A_*>（锚定/结构/统计），AI 填 <I_*>（identity/confidence）。
@@ -9,14 +9,14 @@ import json
 import re
 from pathlib import Path
 
+import paths
 import schema
 
 PLACEHOLDER_RE = re.compile(r"<([AI]_[A-Z0-9_]+)>")
 
 
 def load_template(path: str | None = None) -> dict:
-    p = Path(path) if path else (Path(__file__).resolve().parent.parent
-                                 / "jsons" / "publish.json")
+    p = Path(path) if path else paths.JSONS / "publish.json"
     return json.loads(p.read_text(encoding="utf-8-sig"))
 
 
@@ -81,7 +81,7 @@ def fill(template: dict, program: dict, identity: dict,
 
 def publish(target: str | Path, program: dict, identity: dict,
             warnings: list[str], template_path: str | None = None) -> tuple[Path | None, list[str]]:
-    """环5 主入口：填模板 → 校验 → 落 <原名>.publish.json。
+    """主入口：填模板 → 校验 → 落 <原名>.publish.json。
 
     返回 (侧车路径 | None, 校验问题列表)。None = 校验未过，未落盘。
     """

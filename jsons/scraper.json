@@ -1,8 +1,5 @@
 {
-  "concurrency": {
-    "extract": 4,
-    "api": 1
-  },
+  "concurrency": 4,
   "ai": {
     "provider": "lmstudio",
     "base_url": "http://localhost:1234/v1",
@@ -10,11 +7,14 @@
     "api_key": "lm-studio",
     "temperature": 0.2,
     "timeout": 300,
-    "context": {
-      "page_chars": 3000,
-      "remind_at": 32000,
-      "force_publish_at": 60000,
-      "max_turns": 24
-    }
+    "page_chars": 3000,
+    "remind_at": 32000,
+    "force_publish_at": 60000,
+    "max_turns": 24
+  },
+  "limits": {
+    "extract_timeout_s": 1800,
+    "max_text_file_bytes": 33554432,
+    "sentence_max_ratio": 0.1
   }
 }

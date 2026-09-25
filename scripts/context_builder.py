@@ -1,7 +1,7 @@
-"""context_builder.py — 环3 打包：只读 extracted/ 目录 → context.json。
+"""context_builder.py — 打包器：只读 extracted/ 目录 → context.json。
 
-与环2解耦：不看 extractor 的结果 dict，只认目录里的文件。
-分页规则：句子切分、页界软化（对齐句末）、单句超 page_chars*10% 整句跳过；
+分页规则：句子切分、页界软化（对齐句末）、单句超 page_chars*sentence_max_ratio
+整句跳过；护栏（max_text_file_bytes）由调用方从 scraper.json limits 传入。
 files_index 记录每文件起始索引与页号；tail_page 元数据页放末尾。
 """
 from __future__ import annotations
@@ -17,8 +17,6 @@ TEXT_EXTS = {
     ".sh", ".bat", ".ps1", ".sql", ".lua", ".r", ".swift", ".m", ".pl",
     ".log", ".srt", ".ass", ".vtt", ".svg", ".gitignore", ".env", ".list",
 }
-MAX_TEXT_FILE_BYTES = 32 * 1024 * 1024   # 单文本文件读取上限（脚本内定死）
-SENTENCE_RE = None  # 延迟编译
 
 
 def _looks_binary(data: bytes) -> bool:
@@ -38,7 +36,8 @@ def _split_sentences(text: str) -> list[str]:
     return [p for p in parts if p.strip()]
 
 
-def read_text_blocks(extracted_dir: str | Path) -> list[dict]:
+def read_text_blocks(extracted_dir: str | Path,
+                     max_text_file_bytes: int) -> list[dict]:
     """遍历 extracted/，产出文本块。返回 [{file, text, size}]（binary 只登记）。"""
     base = Path(extracted_dir)
     blocks: list[dict] = []
@@ -48,7 +47,7 @@ def read_text_blocks(extracted_dir: str | Path) -> list[dict]:
         rel = p.relative_to(base).as_posix()
         size = p.stat().st_size
         ext = p.suffix.lower()
-        if ext in TEXT_EXTS and size <= MAX_TEXT_FILE_BYTES:
+        if ext in TEXT_EXTS and size <= max_text_file_bytes:
             try:
                 data = p.read_bytes()
                 if not _looks_binary(data):
@@ -79,12 +78,18 @@ def _tail_page(blocks: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build(extracted_dir: str | Path, page_chars: int = 3000) -> dict:
-    """环3 主入口：extracted/ → context dict（供序列化为 context.json）。"""
-    blocks = read_text_blocks(extracted_dir)
+def build(extracted_dir: str | Path, page_chars: int,
+          max_text_file_bytes: int = 33554432,
+          sentence_max_ratio: float = 0.1) -> dict:
+    """主入口：extracted/ → context dict（供序列化为 context.json）。
+
+    max_text_file_bytes/sentence_max_ratio 默认值仅供直调兜底，
+    scan 链路上一律由 scraper.json limits 传入。
+    """
+    blocks = read_text_blocks(extracted_dir, max_text_file_bytes)
     tail = _tail_page(blocks)
 
-    max_sent = page_chars // 10   # 单句上限 10%
+    max_sent = int(page_chars * sentence_max_ratio)   # 单句上限
     page_texts: list[str] = []
     cur: list[str] = []
     cur_chars = 0

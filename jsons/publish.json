@@ -1,8 +1,6 @@
 {
-  "template_version": "2.0",
   "_readme": "发布模板：程序填充 <A_*> 锚定字段，AI 填充 <I_*> 识别字段；填充后经 schema 校验通过才落 <原名>.publish.json 侧车。",
   "fields": {
-    "schema_version": "2.0",
     "anchoring": {
       "sha256": "<A_SHA256>",
       "source_path": "<A_SOURCE_PATH>",

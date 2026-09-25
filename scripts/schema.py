@@ -1,12 +1,13 @@
-"""schema.py — 刮削结果 schema v1.0 契约与校验。
+"""schema.py — 侧车契约单源：大类枚举、低置信阈值、校验。
 
+CATEGORIES/LOW_CONFIDENCE 是全项目唯一来源（ai_identify、prompt.json 校验均引用）。
 字段名英文（机器友好），展示层由 cli.show 做中文映射。
 """
 from __future__ import annotations
 
-SCHEMA_VERSION = "2.0"
-
 CATEGORIES = ["dataset", "media", "software", "documents", "mixed", "unknown"]
+
+LOW_CONFIDENCE = 0.6   # 低于此值在 warnings/报告中标"建议人工复核"
 
 # 用于 Ollama structured output 的 JSON Schema（identity + confidence 部分）
 IDENTITY_JSON_SCHEMA = {
@@ -26,7 +27,6 @@ IDENTITY_JSON_SCHEMA = {
 def empty_document() -> dict:
     """构造一份空白但结构完整的侧车文档。"""
     return {
-        "schema_version": SCHEMA_VERSION,
         "anchoring": {
             "sha256": "",
             "source_path": "",
@@ -69,9 +69,6 @@ def empty_document() -> dict:
 def validate(doc: dict) -> list[str]:
     """校验侧车文档结构，返回问题列表（空列表 = 合法）。"""
     problems: list[str] = []
-    if doc.get("schema_version") != SCHEMA_VERSION:
-        problems.append(f"schema_version 应为 {SCHEMA_VERSION}，实际 {doc.get('schema_version')!r}")
-
     anch = doc.get("anchoring")
     if not isinstance(anch, dict):
         problems.append("anchoring 缺失或非对象")

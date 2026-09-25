@@ -1,10 +1,9 @@
-"""ai_identify.py — 环4 会话引擎。
+"""ai_identify.py — 识别会话引擎。
 
-只吃三样静态输入：context.json（物料）、prompt.json（提示词注册表+action契约）、
-scraper.json（后端连接配置，连接逻辑在 backend.py）。逐轮交互全走 JSON 契约
-（strict response_format），每轮追加写 runs/<run_id>/messages.json
-（prompt_key 与展开 text 都存）。水位：remind_at 提醒 / force_publish_at 强制。
-护栏：max_turns、非法JSON容忍1次、同页停滞转强制、强制后仍翻页2次降级。
+我是什么：与 AI 后端逐轮交互的会话逻辑（连接逻辑在 backend.py）。
+我的接口：run_session(context_pkg, prompts, cfg, mlog, hint_exts)
+  → (identity, confidence, warnings, stats)；逐轮追加 messages.json。
+护栏：max_turns、非法JSON容忍1次、同页停滞转强制、强制后仍翻页2次降级；
 任何失败路径降级 unknown。
 """
 from __future__ import annotations
@@ -16,28 +15,18 @@ from datetime import datetime
 from pathlib import Path
 
 import backend
+import schema
+import paths
 from backend import PROVIDER_DEFAULTS
 
-DEFAULT_CONFIG = {
-    "provider": "lmstudio",
-    "base_url": PROVIDER_DEFAULTS["lmstudio"],
-    "model": "",
-    "api_key": "lm-studio",
-    "temperature": 0.2,
-    "timeout": 300,
-    "page_chars": 3000,        # 环3 打包页大小（cli 读）
-    "remind_at": 32000,
-    "force_publish_at": 60000,
-    "max_turns": 24,
-}
+CATEGORIES = schema.CATEGORIES
+LOW_CONFIDENCE = schema.LOW_CONFIDENCE
 
-DEFAULT_CONCURRENCY = {"extract": 4, "api": 1}   # 全局并发统一（scraper.json 顶层）
+JSONS = paths.JSONS
 
-LOW_CONFIDENCE = 0.6
-CATEGORIES = ["dataset", "media", "software", "documents", "mixed", "unknown"]
-
-ROOT = Path(__file__).resolve().parent.parent
-JSONS = ROOT / "jsons"
+REQUIRED_AI_KEYS = ["provider", "base_url", "model", "api_key", "temperature",
+                    "timeout", "page_chars", "remind_at", "force_publish_at",
+                    "max_turns"]
 
 
 def datetime_now_iso() -> str:
@@ -45,32 +34,46 @@ def datetime_now_iso() -> str:
 
 
 def load_config(path: str | None = None) -> dict:
-    """读 jsons/scraper.json：顶层 concurrency + ai 段，合并默认值。"""
-    cfg = dict(DEFAULT_CONFIG)
-    conc = dict(DEFAULT_CONCURRENCY)
+    """读 jsons/scraper.json——唯一配置真相，缺键直接报错（不静默回落默认值）。"""
     p = Path(path) if path else JSONS / "scraper.json"
-    user_base_url = None
-    if p.exists():
-        try:
-            raw = json.loads(p.read_text(encoding="utf-8-sig"))
-            user_base_url = (raw.get("ai") or {}).get("base_url")
-            cfg.update({k: v for k, v in (raw.get("ai") or {}).items()
-                        if k in cfg})
-            conc.update({k: v for k, v in (raw.get("concurrency") or {}).items()
-                         if k in conc})
-        except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-            pass
-    if cfg.get("provider") in PROVIDER_DEFAULTS and not user_base_url:
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise ValueError(f"配置文件不可读: {p} ({e})") from e
+
+    ai = raw.get("ai") or {}
+    missing = [k for k in REQUIRED_AI_KEYS if k not in ai]
+    if missing:
+        raise ValueError(f"scraper.json 缺少 ai 键: {missing}（文件 {p}）")
+
+    conc = raw.get("concurrency")
+    if not isinstance(conc, int) or conc < 1:
+        raise ValueError(f"scraper.json concurrency 必须为正整数（当前: {conc!r}）")
+
+    cfg = dict(ai)
+    if cfg["provider"] in PROVIDER_DEFAULTS and not cfg["base_url"]:
         cfg["base_url"] = PROVIDER_DEFAULTS[cfg["provider"]]
     cfg["concurrency"] = conc
+    cfg["limits"] = dict(raw.get("limits") or {})
     return cfg
 
 
 def load_prompts(path: str | None = None) -> dict:
-    """读 jsons/prompt.json（提示词注册表 + action 契约）。"""
+    """读 jsons/prompt.json（提示词注册表 + action 契约）。
+
+    契约硬化：publish action 的 category 枚举必须与 schema.CATEGORIES 一致。
+    """
     p = Path(path) if path else JSONS / "prompt.json"
     data = json.loads(p.read_text(encoding="utf-8-sig"))
     contract = data["contract"]
+    try:
+        enum = contract["schema"]["properties"]["identity"]["anyOf"][1] \
+            ["properties"]["category"]["enum"]
+    except (KeyError, IndexError, TypeError):
+        raise ValueError(f"prompt.json 契约缺少 identity.category 枚举: {p}")
+    if sorted(enum) != sorted(schema.CATEGORIES):
+        raise ValueError(f"prompt.json category 枚举 {enum} 与 schema.CATEGORIES "
+                         f"{schema.CATEGORIES} 不一致")
     prompts = {k: v["text"] for k, v in data["prompts"].items()}
     roles = {k: v.get("role", "user") for k, v in data["prompts"].items()}
     return {"contract": contract, "prompts": prompts, "roles": roles}
