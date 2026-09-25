@@ -168,7 +168,7 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
         rec["detail"] = f"{type(e).__name__}: {e}"
         return rec
     elapsed = (datetime.now().astimezone() - t0).total_seconds()
-    warnings.extend(ex["warnings"])   # extractor's own warnings pass through untouched
+    warnings.extend(ex["warnings"])   # extractor's own warnings pass through unchanged
     published = stats["published"]
     pkg["ai"].update(phase=PH_DONE, published=published,
                      detail=identity.get(schema.FALLBACK_KEY, ""))
@@ -299,8 +299,7 @@ def cmd_scan(args) -> int:
                     try:
                         f.result()
                     except Exception as e:
-                        # belt over the per-segment guards: a worker crash must
-                        # not strand the checklist at status running
+                        # worker crash: print and continue
                         print(f"identify worker crashed: {type(e).__name__}: {e}",
                               file=sys.stderr)
     except KeyboardInterrupt:

@@ -2,25 +2,25 @@
 
 AI-powered scraper for archives and files — identifies what a package *is, what's inside, and what it's for*, and anchors the result next to the file as a sidecar JSON.
 
-Inspired by media library scrapers (like Plex): no unnamed archive black holes — every package gets a searchable, verifiable profile.
+Inspired by media library scrapers (like Plex): each package keeps a searchable, verifiable profile next to the file.
 
 ## Features
 
-- **Full extraction, original files preserved**: a pluggable extractor unpacks zip/7z archives (or copies plain files) into a per-target directory; original files stay untouched
-- **Password polling**: passwords live in the extractor's own `password.json`; encrypted archives are tried automatically — the password never appears on the command line or in any artifact
+- **Full extraction, original files preserved**: a pluggable extractor unpacks zip/7z archives (or copies plain files) into a per-target directory; original files are not modified
+- **Password polling**: passwords live in the extractor's own `password.json`; encrypted archives are tried automatically — the password is not passed on the command line and not written to artifacts
 - **Paged AI identification**: extracted content is packed into sentence-aligned pages with a catalog and a metadata tail page; the AI browses pages through a JSON contract (`read_page` / `publish`)
-- **Context guardrails**: `max_turns` cap (negative = unlimited), near-limit reminder, forced publish at the token ceiling, invalid-JSON tolerance, page-stall detection — every failure path degrades to a flagged `unknown`, never a crash
+- **Context guardrails**: `max_turns` cap (negative = unlimited), near-limit reminder, forced publish at the token ceiling, invalid-JSON tolerance, page-stall detection — failure paths degrade to a flagged `unknown`
 - **Sidecar anchoring**: the result lands in `<name>.publish.json` next to the target, keyed by SHA256 — re-scans skip already-published targets; `check` detects hash drift, low confidence and orphan sidecars
 - **Batch friendly**: concurrent extract + identify pools behind one barrier, per-target failure isolation, full run archives under `runs/`, JSONL export
 
 ## Production–consumption pipeline
 
-Six rings plus a static contract layer. Ring boundaries are files where it
-matters (targets → extracted/ + _result.json → sidecar); rings 3–5 run
-in-process under `cli.py`, handing dicts in memory — the runs/ JSON files
+Six rings plus a static contract layer. File-boundary handovers: targets →
+extracted/ + _result.json → sidecar. Rings 3–5 run in-process under `cli.py`,
+handing dicts in memory — the runs/ JSON files
 (context.json, messages.json, checklist.json) are archives written alongside,
 so ring 6 can replay any run standalone. `cli.py` is the orchestrator and the
-only file importing across rings — ring scripts never import each other.
+only file importing across rings — ring scripts do not import each other.
 
 ```
 static contract layer   jsons/scraper.json · prompt.json · publish.json
@@ -43,14 +43,14 @@ main.py ──> cli.py
           │                 → <name>.publish.json sidecar (validation failure
           │                   writes nothing)
   ring 6  run_logger        eats runs/<id>/{checklist,context,messages}.json + sidecars
-                            → run report; zero printing during the scan, one report
+                            → run report; no printing during the scan, one report
                               at the end; callable standalone for any run_id
 ```
 
 Rings 1–2 run as a worker pool, then rings 3–5 run per target after the pool
 joins, handing dicts in memory (the runs/ files are archives for ring 6 and
-standalone replay); ring 6 is read-only. `extractors/` never imports project
-modules and never reads `jsons/`; extractor directories are swapped in and
+standalone replay); ring 6 is read-only. `extractors/` does not import project
+modules and does not read `jsons/`; extractor directories are swapped in and
 out whole.
 
 ## Installation
@@ -93,7 +93,7 @@ uv run python scripts/run_logger.py <run_id>
 
 ## Configuration
 
-`jsons/scraper.json` is the only config file; missing keys raise instead of silently defaulting:
+`jsons/scraper.json` is the only config file; missing or mistyped keys raise:
 
 ```json
 {
@@ -119,7 +119,7 @@ uv run python scripts/run_logger.py <run_id>
 
 | Key | Meaning |
 |-----|---------|
-| `concurrency` | one value governs both the extract pool and the identify pool (they never overlap; `--workers` overrides per run) |
+| `concurrency` | one value governs both the extract pool and the identify pool (the pools do not overlap; `--workers` overrides per run) |
 | `ai.base_url` | empty → auto-probe: LM Studio native `/api/v1/chat` → LM Studio `/v1/chat/completions` → Ollama `/v1/chat/completions` (first passing reachability + a minimal session wins); a non-empty value is used as-is. Request style follows the URL: full path ending in `/chat` sends the native `{model, input}` body; `/chat/completions` or a bare base (e.g. `/v1`) sends the messages array |
 | `ai.model` | leave empty to auto-pick the first loaded model on the backend |
 | `ai.page_chars` | target page size in characters |
@@ -163,12 +163,12 @@ native `output[]` message list — are normalized to the same extracted text;
 Guardrails: one invalid-JSON retry; duplicate/nonexistent-page stalls flip into
 forced publish; `remind_at` nudges and `force_publish_at` forces at estimated
 token totals (two more page turns after force, then give up); `max_turns` caps
-the session unless negative. Every give-up path ends in a flagged `unknown`
-sidecar, not a crash.
+the session unless negative. Give-up paths end in a flagged `unknown`
+sidecar.
 
 ## Sidecar format
 
-`<name>.publish.json` is created next to every target, always passing `schema.py` validation — invalid sidecars are never written:
+`<name>.publish.json` is created next to every target, validated with `schema.py` before writing; a failed validation writes no file:
 
 ```json
 {
@@ -184,14 +184,14 @@ sidecar, not a crash.
 ```
 
 - `anchoring.sha256` is the primary anchor: `check` re-hashes the target to detect content drift
-- `flags.password_protected` only signals encryption — the working password is never persisted
-- `warnings` includes the extractor's own notes, passed through untouched
+- `flags.password_protected` only signals encryption — the working password is not persisted
+- `warnings` includes the extractor's own notes, passed through unchanged
 
 ## Project layout
 
 ```
 ├── main.py                        # unified entry point (delegates to scripts/cli.py)
-├── scripts/                       # pipeline stages (never import each other)
+├── scripts/                       # pipeline stages (do not import each other)
 │   ├── cli.py                     # orchestrator: scan / show / check / export
 │   ├── run_extractor.py           # extractor runner (subprocess entry, contract validation)
 │   ├── context_builder.py         # extracted/ → paged context
@@ -209,7 +209,7 @@ sidecar, not a crash.
 
 ## Safety boundaries
 
-- Extraction is sandboxed: normalized member paths, `..`/absolute-path traversal rejected, zip-bomb caps on total size (4GB) and entry count (50k)
-- Nothing is executed and no macros are parsed; only text is read as evidence
-- The AI may only read pages and publish an identity through the JSON contract; program-side fields (hashes, structure, anchoring) never pass through the model
-- Invalid AI output degrades to a flagged `unknown` sidecar; nothing invalid ever lands on disk
+- Member paths are normalized; `..`/absolute-path members are skipped; extraction stops above the total-size (4GB) and entry-count (50k) caps
+- Member files are not executed, macros are not parsed; only text is read
+- The AI reads pages and publishes an identity through the JSON contract; program-side fields (hashes, structure, anchoring) are not sent to the model
+- Invalid AI output degrades to a flagged `unknown` sidecar

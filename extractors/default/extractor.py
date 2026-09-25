@@ -3,11 +3,12 @@
 CLI contract: an incoming path (single file) + an outgoing directory;
 concurrency-safe (each target gets its own out dir).
 Self-contained: depends only on third-party packages in the uv environment,
-never imports project modules; holds its own passwords — read from password.json
+does not import project modules; holds its own passwords — read from password.json
 in this directory ({"passwords": ["...", ...]}).
 Behavior is fixed in this script (not wired to config): archives (zip/7z) are
 fully extracted with original files preserved; plain files are copied as-is;
-sandboxed against path escape; zip-bomb guardrails (total size / entry caps).
+member paths are normalized and escaping members are skipped; the total-size
+and entry-count caps abort extraction.
 Structure flags (exe_present, macro_docs, nested_archives from the entry list;
 multi_part from the input file name) are computed here.
 Loaded and executed by scripts/run_extractor.py; the result dict lands in
@@ -215,9 +216,9 @@ def extract(path: str, out_dir: str | Path,
     st["multi_part"] = bool(SPLIT_VOLUME_RE.search(os.path.basename(path)))
 
     if st["entry_count"] > MAX_ENTRIES:
-        raise ValueError(f"entry count {st['entry_count']} exceeds cap {MAX_ENTRIES}; refusing to extract")
+        raise ValueError(f"entry count {st['entry_count']} exceeds cap {MAX_ENTRIES}; extraction aborted")
     if st["total_uncompressed"] > MAX_TOTAL_UNCOMPRESSED:
-        raise ValueError("total uncompressed size exceeds cap; refusing to extract")
+        raise ValueError("total uncompressed size exceeds cap; extraction aborted")
 
     password = None
     if st["password_protected"] and passwords:

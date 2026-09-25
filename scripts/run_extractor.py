@@ -16,7 +16,7 @@ Contract:
      external observation.
 Exit codes: 0 success; 2 bad args; 3 extractor load/execution/contract failure.
 The subprocess is started by the caller with the project uv environment's
-interpreter; extractors depend only on uv-environment packages and never import
+interpreter; extractors depend only on uv-environment packages and do not import
 project modules.
 """
 import importlib.util

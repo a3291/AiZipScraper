@@ -34,7 +34,7 @@ REQUIRED_PROMPT_KEYS = ["system", "first", "remind", "force_publish",
 
 
 def load_config(path: str | None = None) -> dict:
-    """Read jsons/scraper.json; missing keys raise (no silent defaults)."""
+    """Read jsons/scraper.json; missing or mistyped keys raise."""
     p = Path(path) if path else JSONS / "scraper.json"
     try:
         raw = json.loads(p.read_text(encoding="utf-8-sig"))
