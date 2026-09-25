@@ -8,59 +8,52 @@ Inspired by media library scrapers (like Plex): no unnamed archive black holes �
 
 - **Full extraction, original files preserved**: a pluggable extractor unpacks zip/7z archives (or copies plain files) into a per-target directory; original files stay untouched
 - **Password polling**: passwords live in the extractor's own `password.json`; encrypted archives are tried automatically — the password never appears on the command line or in any artifact
-- **Paged AI identification**: extracted content is packed into sentence-aligned pages with a catalog and a metadata tail page; the AI browses pages through a strict JSON contract (`read_page` / `publish`) instead of one giant prompt
-- **Context guardrails**: `max_turns` cap, near-limit reminder, forced publish at the token ceiling, invalid-JSON tolerance, page-stall detection — every failure path degrades to a flagged `unknown`, never a crash
+- **Paged AI identification**: extracted content is packed into sentence-aligned pages with a catalog and a metadata tail page; the AI browses pages through a JSON contract (`read_page` / `publish`)
+- **Context guardrails**: `max_turns` cap (negative = unlimited), near-limit reminder, forced publish at the token ceiling, invalid-JSON tolerance, page-stall detection — every failure path degrades to a flagged `unknown`, never a crash
 - **Sidecar anchoring**: the result lands in `<name>.publish.json` next to the target, keyed by SHA256 — re-scans skip already-published targets; `check` detects hash drift, low confidence and orphan sidecars
 - **Batch friendly**: concurrent extract + identify pools behind one barrier, per-target failure isolation, full run archives under `runs/`, JSONL export
 
 ## Production–consumption pipeline
 
-The project is a three-stage pipeline. Each stage only consumes the previous stage's on-disk artifacts and produces files; the inter-stage interface is files, not function calls. `cli.py` is the sole orchestrator; stage scripts never import each other.
+Six rings plus a static contract layer. Each ring eats the previous ring's
+on-disk artifacts and writes files; `cli.py` is the orchestrator and the only
+file importing across rings — ring scripts never import each other.
 
 ```
-⓪ Static contract layer   jsons/        (in git; produced by humans, consumed by programs)
-   scraper.json   single source of config truth (ai keys + concurrency + limits)
-   prompt.json    prompt registry + action contract (category enum mirrors schema.py)
-   publish.json   sidecar template: <A_*> filled by the program / <I_*> filled by the AI
-        │  (read-only for the whole scan)
-        ▼
-① scan_extract            cli.py (extract section) + run_extractor.py + extractors/<name>/
-   §1 ROSTER     every file is a target (runs/ and *.publish.json excluded);
-                 entry_id = first 8 hex of sha256; cached decided before any work
-   §2 EXTRACT    subprocess pool × concurrency; per-target out dir (concurrency-safe);
-                 extractor holds its own passwords; heartbeat file on start, removed on success
-   §3 CONTRACT   _result.json seven-key contract validated at the source;
-                 on violation exit 3, nothing is written
-   §4 PUBLISH    runs/<run_id>/extracted/<entry_id>/ + _result.json
-        ↓ barrier (extract pool joined before the identify pool opens;
-          extract failures stop here, recorded on the checklist only)
-② identify_publish        cli.py (identify section) + context_builder + ai_identify/backend + publisher
-   §1 CONTEXT    reads extracted/ only (underscore files excluded) → sentence-split,
-                 page-softened pages + files_index + tail page → context.json
-   §2 SESSION    run_session drives the AI through the JSON contract;
-                 backend.py is the only network egress (OpenAI-compatible);
-                 messages.json appended atomically per turn
-   §3 GATE       program fills anchoring/structure, AI fills identity only →
-                 schema.validate gate; invalid sidecars are never written
-   §4 PUBLISH    <name>.publish.json sidecar + runs/<run_id>/{checklist,context,messages}.json
-        ↓ barrier (identify pool done → status = done / interrupted)
-③ audit                   run_logger.py + show/check/export   (read-only, produces nothing)
-   §1 REPORT     run report assembled purely from disk; zero printing during the scan,
-                 one report at the end; any run can be replayed standalone
-   §2 READOUT    show/check/export consume sidecars only;
-                 check re-hashes targets, flags low confidence and orphans
-   §3 CHECKLIST  checklist.json records extract/ai/publish phase per target;
-                 the only cross-run idempotency credential is the sidecar itself
+static contract layer   jsons/scraper.json · prompt.json · publish.json
+                        (human-edited; read by cli / ai_identify / publisher)
+
+main.py ──> cli.py
+  ring 1  find_targets      → target list (every file; runs/ and *.publish.json
+                              excluded; entry_id = sha256[:8]; a target with an
+                              existing sidecar is recorded skipped)
+  ring 2  extract_one ── subprocess ──> run_extractor.py ── load ──> extractors/<name>/
+          │                 → runs/<id>/extracted/<entry_id>/ + _result.json
+          │                 (extractor reads its own password.json; heartbeat
+          │                  file written at start, removed on success)
+  ring 3  context_builder   eats extracted/ only (underscore-prefixed files skipped)
+          │                 → merged into runs/<id>/context.json
+  ring 4  ai_identify       eats context.json + prompt.json + scraper.json
+          │   └ backend.py  → runs/<id>/messages.json (appended atomically per turn)
+          │                   + identity dict
+  ring 5  publisher         eats program fields + identity + publish.json template
+          │                 → <name>.publish.json sidecar (validation failure
+          │                   writes nothing)
+  ring 6  run_logger        eats runs/<id>/{checklist,context,messages}.json + sidecars
+                            → run report; zero printing during the scan, one report
+                              at the end; callable standalone for any run_id
 ```
 
-`extractors/` is a sealed domain: extractors never import project modules, never read `jsons/`, and are swapped in/out as whole directories.
+Rings 1–2 run as a worker pool, then rings 3–5 run per target after the pool
+joins; ring 6 is read-only. `extractors/` never imports project modules and
+never reads `jsons/`; extractor directories are swapped in and out whole.
 
 ## Installation
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
 
 ```bash
-git clone <repo-url> AiZipScraper
+git clone https://github.com/a3291/AiZipScraper.git
 cd AiZipScraper
 uv sync
 ```
@@ -70,6 +63,12 @@ uv sync
 ```bash
 # Batch-scrape a directory (cached targets are skipped automatically)
 uv run python main.py scan D:/downloads
+
+# Override concurrency for this run only (default: scraper.json "concurrency")
+uv run python main.py scan D:/downloads --workers 8
+
+# Use another extractor (a directory under extractors/; default: default)
+uv run python main.py scan D:/downloads --extractor my_extractor
 
 # Force a full re-scrape
 uv run python main.py scan D:/downloads --force
@@ -89,7 +88,7 @@ uv run python scripts/run_logger.py <run_id>
 
 ## Configuration
 
-`jsons/scraper.json` is the single source of config truth; missing keys raise instead of silently defaulting:
+`jsons/scraper.json` is the only config file; missing keys raise instead of silently defaulting:
 
 ```json
 {
@@ -104,7 +103,7 @@ uv run python scripts/run_logger.py <run_id>
     "page_chars": 3000,
     "remind_at": 32000,
     "force_publish_at": 60000,
-    "max_turns": 24
+    "max_turns": -1
   },
   "limits": {
     "extract_timeout_s": 1800,
@@ -117,16 +116,49 @@ uv run python scripts/run_logger.py <run_id>
 | Key | Meaning |
 |-----|---------|
 | `concurrency` | one value governs both the extract pool and the identify pool (they never overlap; `--workers` overrides per run) |
-| `ai.provider` / `ai.base_url` | `lmstudio` default; any OpenAI-compatible endpoint works (Ollama `/v1`, vLLM, llama.cpp server) — an explicit `base_url` takes precedence |
+| `ai.provider` | label kept for reference; endpoint behavior comes from `ai.base_url` or auto-identification |
+| `ai.base_url` | empty → auto-probe: LM Studio native `/api/v1/chat` → LM Studio `/v1/chat/completions` → Ollama `/v1/chat/completions` (first passing reachability + a minimal session wins); a non-empty value is used as-is. Request style follows the URL: full path ending in `/chat` sends the native `{model, input}` body; `/chat/completions` or a bare base (e.g. `/v1`) sends the messages array |
 | `ai.model` | leave empty to auto-pick the first loaded model on the backend |
 | `ai.page_chars` | target page size in characters |
 | `ai.remind_at` / `ai.force_publish_at` | estimated-token thresholds: nudge the AI, then force a publish |
-| `ai.max_turns` | hard cap on session turns |
+| `ai.max_turns` | session turn cap; negative (default `-1`) = unlimited — the token ceilings, stall detection and invalid-JSON tolerance still terminate the session |
 | `limits.extract_timeout_s` | per-target extraction time box |
 | `limits.max_text_file_bytes` | files above this size are registered but not read as text |
 | `limits.sentence_max_ratio` | sentences longer than `page_chars × ratio` are skipped whole |
 
 Prompts live in `jsons/prompt.json`; the sidecar template in `jsons/publish.json`. Swap config ad hoc with `--config other.json`.
+
+## API interaction
+
+`backend.py` talks to the AI server once per turn of every recognition session.
+
+**Endpoint resolution** (once per run, before the first session):
+
+- `ai.base_url` non-empty → used as-is
+- `ai.base_url` empty → candidates probed in order: LM Studio native
+  `http://localhost:1234/api/v1/chat` → LM Studio
+  `http://localhost:1234/v1/chat/completions` → Ollama
+  `http://localhost:11434/v1/chat/completions`; each gets a reachability POST
+  (any HTTP response counts) plus a minimal session (text must come back), and
+  the first passing candidate wins — endpoint, request style and the
+  auto-picked model are recorded for the whole run
+
+**Request style follows the URL:**
+
+- full path ending in `/chat` (LM Studio native) → `{"model", "input": [{"type": "text", "content": …}]}`; the whole conversation (system, first prompt, delivered pages, assistant replies) is rendered into one text with `[role]` labels
+- otherwise (OpenAI-compatible) → `{"model", "messages": […], "temperature", "stream": false, "response_format": {"type": "json_schema", "json_schema": …}}` with the publish contract as the schema
+
+**Responses** in either shape — OpenAI `choices[0].message.content` or the
+native `output[]` message list — are normalized to the same extracted text;
+`usage` counts are kept when present and feed the token guardrails.
+
+**Session contract:** the model returns one JSON object per turn —
+`{"action": "read_page", "page": N}` or `{"action": "publish", "identity": {…}}`.
+Guardrails: one invalid-JSON retry; duplicate/nonexistent-page stalls flip into
+forced publish; `remind_at` nudges and `force_publish_at` forces at estimated
+token totals (two more page turns after force, then give up); `max_turns` caps
+the session unless negative. Every give-up path ends in a flagged `unknown`
+sidecar, not a crash.
 
 ## Sidecar format
 
@@ -158,12 +190,12 @@ Prompts live in `jsons/prompt.json`; the sidecar template in `jsons/publish.json
 │   ├── run_extractor.py           # extractor runner (subprocess entry, contract validation)
 │   ├── context_builder.py         # extracted/ → paged context
 │   ├── ai_identify.py             # recognition session engine
-│   ├── backend.py                 # AI server/API connection layer (only network egress)
+│   ├── backend.py                 # AI server/API connection (endpoint auto-identification)
 │   ├── publisher.py               # template fill → validate → sidecar
 │   ├── run_logger.py              # run report assembler (pure disk reader)
-│   ├── schema.py                  # sidecar contract single source
-│   └── paths.py                   # single source of project paths
-├── extractors/                    # sealed extractor domain (pluggable directories)
+│   ├── schema.py                  # sidecar contract (category enum, threshold, validation)
+│   └── paths.py                   # project path constants
+├── extractors/                    # extractor directories (pluggable, self-contained)
 │   └── default/                   # extractor.py + self-held password.json
 ├── jsons/                         # static contract layer (human-edited, program-read)
 └── runs/                          # per-scan archives (not tracked)
@@ -173,5 +205,5 @@ Prompts live in `jsons/prompt.json`; the sidecar template in `jsons/publish.json
 
 - Extraction is sandboxed: normalized member paths, `..`/absolute-path traversal rejected, zip-bomb caps on total size (4GB) and entry count (50k)
 - Nothing is executed and no macros are parsed; only text is read as evidence
-- The AI controls *nothing* — it may only read pages and publish an identity through the JSON contract; program-side fields (hashes, structure, anchoring) never pass through the model
+- The AI may only read pages and publish an identity through the JSON contract; program-side fields (hashes, structure, anchoring) never pass through the model
 - Invalid AI output degrades to a flagged `unknown` sidecar; nothing invalid ever lands on disk

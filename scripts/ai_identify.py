@@ -2,8 +2,8 @@
 
 run_session(context_pkg, prompts, cfg, mlog, hint_exts)
   → (identity, confidence, warnings, stats); appends to messages.json per turn.
-Guardrails: max_turns, one invalid-JSON tolerance, page stall → forced publish,
-2 more page turns after force → degrade.
+Guardrails: max_turns cap (negative = unlimited), one invalid-JSON tolerance,
+page stall → forced publish, 2 more page turns after force → degrade.
 """
 from __future__ import annotations
 
@@ -49,8 +49,6 @@ def load_config(path: str | None = None) -> dict:
         raise ValueError(f"scraper.json concurrency must be a positive integer (got: {conc!r})")
 
     cfg = dict(ai)
-    if cfg["provider"] in backend.PROVIDER_DEFAULTS and not cfg["base_url"]:
-        cfg["base_url"] = backend.PROVIDER_DEFAULTS[cfg["provider"]]
     cfg["concurrency"] = conc
     cfg["limits"] = dict(raw.get("limits") or {})
     return cfg
@@ -172,7 +170,8 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         return _fallback(reason), 0.0, warnings, stats
 
     if not backend.endpoint_available(cfg):
-        return bail(f"AI backend unreachable ({cfg['base_url']})")
+        tried = cfg.get("base_url") or ", ".join(backend.CANDIDATE_ENDPOINTS)
+        return bail(f"AI backend unreachable ({tried})")
     model = backend.resolve_model(cfg)
     if model is None:
         return bail(f"AI backend has no loaded model ({cfg['base_url']})")
@@ -187,23 +186,16 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
     catalog = (f"Content pages: {stats['pages']} total (pages 1..{stats['pages']}); "
                f"the last page is page {context_pkg['tail_page']['no']}.")
 
+    turns_desc = "unlimited" if cfg["max_turns"] < 0 else str(cfg["max_turns"])
     messages: list[dict] = [
         {"role": R["system"], "content": P["system"]},
         {"role": R["first"], "content": P["first"].format(
-            depth="full", hint=hint, max_turns=cfg["max_turns"],
+            depth="full", hint=hint, max_turns=turns_desc,
             page_chars=cfg["page_chars"], tail_page=tail_text,
             catalog=catalog)},
     ]
     mlog.append(messages[0]["role"], messages[0]["content"], "system")
     mlog.append(messages[1]["role"], messages[1]["content"], "first")
-
-    payload_base = {
-        "model": model,
-        "temperature": cfg["temperature"],
-        "stream": False,
-        "response_format": {"type": "json_schema", "json_schema": contract},
-    }
-    url = f"{cfg['base_url'].rstrip('/')}/chat/completions"
 
     reminded = forced = False
     forced_retries = bad_json = dupes = 0
@@ -211,7 +203,9 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
     usage_tokens = 0
     pages = context_pkg["pages"]
 
-    for turn in range(1, cfg["max_turns"] + 1):
+    turn = 0
+    while cfg["max_turns"] < 0 or turn < cfg["max_turns"]:
+        turn += 1
         stats["turns"] = turn
         tokens = usage_tokens or _estimate_tokens(messages)
         if not forced and tokens >= cfg["force_publish_at"]:
@@ -222,8 +216,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
             reminded = True
 
         try:
-            resp = backend.post(url, {**payload_base, "messages": messages},
-                                cfg["timeout"], cfg.get("api_key", ""))
+            resp = backend.chat(cfg, messages, contract, cfg["timeout"])
             usage = resp.get("usage") or {}
             stats["tokens_in"] = usage.get("prompt_tokens", 0)
             stats["tokens_out"] = usage.get("completion_tokens", 0)

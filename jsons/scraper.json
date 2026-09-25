@@ -10,7 +10,7 @@
     "page_chars": 3000,
     "remind_at": 32000,
     "force_publish_at": 60000,
-    "max_turns": 24
+    "max_turns": -1
   },
   "limits": {
     "extract_timeout_s": 1800,
