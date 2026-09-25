@@ -1,0 +1,36 @@
+{
+  "template_version": "2.0",
+  "_readme": "发布模板：程序填充 <A_*> 锚定字段，AI 填充 <I_*> 识别字段；填充后经 schema 校验通过才落 <原名>.publish.json 侧车。",
+  "fields": {
+    "schema_version": "2.0",
+    "anchoring": {
+      "sha256": "<A_SHA256>",
+      "source_path": "<A_SOURCE_PATH>",
+      "file_size": "<A_FILE_SIZE>",
+      "mtime": "<A_MTIME>"
+    },
+    "scrape": {
+      "scraped_at": "<A_SCRAPED_AT>",
+      "engine": "<A_ENGINE>",
+      "depth": "<A_DEPTH>",
+      "confidence": "<I_CONFIDENCE>"
+    },
+    "identity": {
+      "title": "<I_TITLE>",
+      "category": "<I_CATEGORY>",
+      "summary": "<I_SUMMARY>",
+      "tags": "<I_TAGS>",
+      "language": "<I_LANGUAGE>"
+    },
+    "structure": {
+      "entry_count": "<A_ENTRY_COUNT>",
+      "dir_count": "<A_DIR_COUNT>",
+      "total_uncompressed": "<A_TOTAL_UNCOMPRESSED>",
+      "top_extensions": "<A_TOP_EXTENSIONS>",
+      "top_level_dirs": "<A_TOP_LEVEL_DIRS>",
+      "notable_files": "<A_NOTABLE_FILES>"
+    },
+    "flags": "<A_FLAGS>",
+    "warnings": "<A_WARNINGS>"
+  }
+}

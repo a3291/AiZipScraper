@@ -1,0 +1,20 @@
+{
+  "concurrency": {
+    "extract": 4,
+    "api": 1
+  },
+  "ai": {
+    "provider": "lmstudio",
+    "base_url": "http://localhost:1234/v1",
+    "model": "",
+    "api_key": "lm-studio",
+    "temperature": 0.2,
+    "timeout": 300,
+    "context": {
+      "page_chars": 3000,
+      "remind_at": 32000,
+      "force_publish_at": 60000,
+      "max_turns": 24
+    }
+  }
+}

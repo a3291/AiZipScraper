@@ -1,0 +1,73 @@
+{
+  "registry_version": "2.0",
+  "_readme": "提示词注册表：会话引擎按 key 取用，代码零硬编码文案。text 中的 {page_chars}/{max_turns}/{catalog}/{hint}/{depth}/{tail_page}/{page_no}/{page_text}/{attempt_left} 为占位符。",
+  "contract": {
+    "name": "archive_control",
+    "strict": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "enum": ["read_page", "publish"] },
+        "page": { "type": ["integer", "null"] },
+        "identity": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "properties": {
+                "title": { "type": "string" },
+                "category": { "type": "string", "enum": ["dataset", "media", "software", "documents", "mixed", "unknown"] },
+                "summary": { "type": "string" },
+                "tags": { "type": "array", "items": { "type": "string" } },
+                "language": { "type": "array", "items": { "type": "string" } },
+                "confidence": { "type": "number" }
+              },
+              "required": ["title", "category", "summary", "tags", "language", "confidence"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": ["action", "page", "identity"],
+      "additionalProperties": false
+    }
+  },
+  "prompts": {
+    "system": {
+      "role": "system",
+      "text": "你是压缩包内容分析器。证据资料已按页摆放，你通过 JSON 契约与宿主沟通：\n请求翻页: {\"action\":\"read_page\",\"page\":页号,\"identity\":null}\n发布结论: {\"action\":\"publish\",\"page\":null,\"identity\":{\"title\",\"category\",\"summary\",\"tags\",\"language\",\"confidence\"}}\nidentity 字段：title(简洁名称)、category(dataset/media/software/documents/mixed/unknown)、summary(两到三句话)、tags(标签数组)、language(语言代码数组)、confidence(0到1的小数)。证据不足时 category 用 unknown 且 confidence 降低。只输出一个 JSON 对象。"
+    },
+    "first": {
+      "role": "user",
+      "text": "请根据分页证据判断这个目标是什么。\n识别深度: {depth}\n程序预判大类（仅供参考，可推翻）: {hint}\n上下文共 {max_turns} 轮沟通机会，每页约 {page_chars} 字符。\n\n===== 末尾页（元数据，默认先读） =====\n{tail_page}\n\n===== 目录页 =====\n{catalog}\n\n证据足够后立即用 publish 发布，不要无意义地遍历所有页。"
+    },
+    "page_deliver": {
+      "role": "user",
+      "text": "===== 第{page_no}页 =====\n{page_text}"
+    },
+    "remind": {
+      "role": "system",
+      "text": "提醒：上下文接近耗尽，请尽快收敛并 publish。"
+    },
+    "force_publish": {
+      "role": "user",
+      "text": "上下文已达上限，立即用 publish 发布结论。"
+    },
+    "force_publish_only": {
+      "role": "user",
+      "text": "只能 publish，禁止 read_page。立即发布结论。"
+    },
+    "bad_json_retry": {
+      "role": "user",
+      "text": "上次输出不是合法契约 JSON（剩余容忍 {attempt_left} 次），请重新输出。"
+    },
+    "dup_page": {
+      "role": "user",
+      "text": "{why}，请选其他页或直接 publish。"
+    },
+    "stall_to_publish": {
+      "role": "user",
+      "text": "检测到翻页停滞，立即用 publish 发布当前结论。"
+    }
+  }
+}

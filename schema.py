@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "2.0"
 
 CATEGORIES = ["dataset", "media", "software", "documents", "mixed", "unknown"]
 
@@ -86,7 +86,7 @@ def validate(doc: dict) -> list[str]:
     if not isinstance(scrape, dict):
         problems.append("scrape 缺失或非对象")
     else:
-        if scrape.get("depth") not in ("listing", "listing+sample"):
+        if scrape.get("depth") not in ("full", "direct"):
             problems.append(f"scrape.depth 非法: {scrape.get('depth')!r}")
         c = scrape.get("confidence")
         if not (isinstance(c, (int, float)) and 0.0 <= c <= 1.0):
@@ -117,8 +117,6 @@ def validate(doc: dict) -> list[str]:
 
     if not isinstance(doc.get("warnings"), list):
         problems.append("warnings 应为数组")
-    if not isinstance(doc.get("sample_evidence"), list):
-        problems.append("sample_evidence 应为数组")
     if not isinstance(doc.get("structure"), dict):
         problems.append("structure 缺失或非对象")
 

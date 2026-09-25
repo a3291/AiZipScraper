@@ -2,5 +2,4 @@ dev/
 test_fixtures/
 .venv/
 __pycache__/
-memo.md
 runs/
