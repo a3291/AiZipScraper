@@ -25,16 +25,17 @@ def looks_binary(head):
     return printable / len(sample) < 0.9
 
 
-def file_to_text(path, max_bytes):
+def file_to_text(path):
     """Return the decoded text of path, or None when the file is not usable
-    text (unknown extension, empty, oversized, binary, undecodable)."""
+    text (unknown extension, empty, binary, undecodable). Quantity policy
+    lives with the extractor, which caps what it writes; everything it
+    produced is read here."""
     p = Path(path)
     if not p.is_file():
         return None
     if p.suffix.lower() not in TEXT_EXTS:
         return None
-    size = p.stat().st_size
-    if size == 0 or size > max_bytes:
+    if p.stat().st_size == 0:
         return None
     try:
         with p.open("rb") as f:

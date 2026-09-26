@@ -8,9 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import context_builder
-import prompt_builder
-import schema
+from common import prompt_builder, schema
+from extractor import context_builder
 
 PASS = 0
 FAIL = 0
@@ -57,6 +56,8 @@ def test_load_and_inject():
     )
     sys_content = pb.get("system")["content"]
     ok('{"action": "read_page"' in sys_content, "inject: contract rendered into system")
+    ok("read_chatlog" in sys_content, "inject: read_chatlog in rendered contract")
+    ok("write_memo" in sys_content, "inject: write_memo in rendered contract")
     ok("{_contract:" not in sys_content, "inject: no token left")
     m = pb.get("page_deliver", page=2, page_total=9, page_text="BODY")
     ok(m["role"] == "user" and "Page 2 of 9" in m["content"] and "BODY" in m["content"],
@@ -77,8 +78,7 @@ def test_context_paging():
         )
         (tmp / "_skip.txt").write_text("ignored", "utf-8")
         (tmp / "b.bin").write_bytes(b"\x00\x01binary")
-        pkg = context_builder.build(tmp, page_chars=200, sentence_max_ratio=0.5,
-                                    max_text_bytes=1 << 20)
+        pkg = context_builder.build(tmp, page_chars=200, sentence_max_ratio=0.5)
         ok(pkg["stats"]["text_files"] == 1, "paging: only text files packed")
         ok(pkg["stats"]["pages"] >= 2, "paging: multiple pages")
         for p in pkg["pages"]:

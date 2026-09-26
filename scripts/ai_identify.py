@@ -10,26 +10,22 @@ import json
 import threading
 from pathlib import Path
 
-import backend
-import schema
-from paths import read_json, write_json
+from common import backend, schema
+from common.paths import read_json, write_json
+from extractor import context_builder
 
 REQUIRED_AI_KEYS = {
     "base_url", "model", "api_key", "temperature", "timeout",
     "page_chars", "remind_at", "force_publish_at", "max_turns",
+    "estimate_chunk", "publish_retries",
 }
 REQUIRED_PROMPT_KEYS = {
-    "system", "first", "chatlog", "help", "remind", "force_publish",
-    "bad_json_retry", "publish_retry", "dup_page",
+    "system", "first", "chatlog", "chatlog_deliver", "help", "remind",
+    "force_publish", "bad_json_retry", "publish_retry",
     "stall_to_publish", "page_deliver", "chatlog_summarize",
-    "chatlog_summarize_reply",
+    "chatlog_summarize_reply", "memo", "memo_deliver", "memo_saved",
+    "memo_reject",
 }
-ESTIMATE_CHUNK = 4
-ROLL_HARD_CAP = 20
-MAX_FORCED_RETRIES = 2
-BAD_JSON_TOLERANCE = 1
-PUBLISH_RETRIES = 3
-
 _MSG_LOCK = threading.Lock()
 
 
@@ -52,8 +48,10 @@ class MessageLog:
     tracks session boundaries in sessions.json."""
 
     def __init__(self, run_dir, key):
-        self._run_dir = Path(run_dir)
-        self._key = key
+        self.run_dir = Path(run_dir)
+        self.key = key
+        self._run_dir = self.run_dir
+        self._key = self.key
         self._entries = self._read("messages.json").get("packages", {}).get(key, [])
         self._sessions = (
             self._read("sessions.json").get("packages", {}).get(key, {"sessions": []})["sessions"]
@@ -89,8 +87,8 @@ class MessageLog:
             write_json(self._run_dir / "sessions.json", ses)
 
 
-def _estimate_tokens(messages):
-    return sum(len(m["content"]) for m in messages) // ESTIMATE_CHUNK
+def _estimate_tokens(messages, chunk):
+    return sum(len(m["content"]) for m in messages) // chunk
 
 
 def _extract_json(text):
@@ -169,28 +167,49 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         "tokens_in": 0, "tokens_out": 0,
     }
     read_pages = set()
-    digests = []
+    chatlog_pages = []
     usage_tokens = 0
+    memo_limit = ai["page_chars"]
+
+    def _load_memo(run_dir, key):
+        p = Path(run_dir) / "memo.json"
+        doc = read_json(p) if p.exists() else {"packages": {}}
+        return doc["packages"].get(key, {}).get("text", "")
+
+    def _save_memo(run_dir, key, text):
+        p = Path(run_dir) / "memo.json"
+        doc = read_json(p) if p.exists() else {"packages": {}}
+        doc["packages"][key] = {"text": text}
+        write_json(p, doc)
+
+    memo_text = _load_memo(mlog.run_dir, mlog.key)
+
+    def memo_msg():
+        body = memo_text if memo_text else "(memo is empty)"
+        return pb.get("memo", memo_text=body)
+
     rolls = 0
     max_turns = ai["max_turns"]
     forced = False
     reminded = False
     summary_tried = False
-    forced_retries = 0
-    dupes = 0
-    bad_json_left = BAD_JSON_TOLERANCE
-    retry_left = PUBLISH_RETRIES
+    retry_left = ai["publish_retries"]
 
     system = pb.get("system")
     first = pb.get("first", catalog=context_pkg["catalog"], tail=tail["text"])
     add = pb.get("add") if pb.has("add") else None
 
     def chatlog_msg():
-        block = "\n".join(digests) if digests else "(no digests yet)"
         read = ", ".join(str(n) for n in sorted(read_pages)) or "none"
+        if chatlog_pages:
+            cat = "chatlog catalog: " + ", ".join(
+                f"p{i + 1}={len(t)} chars" for i, t in enumerate(chatlog_pages)
+            )
+        else:
+            cat = "chatlog catalog: no history yet"
         return pb.get(
-            "chatlog", roll_no=rolls, summaries_block=block,
-            pages_read=read, page_total=page_total,
+            "chatlog", roll_no=rolls, pages_read=read, page_total=page_total,
+            chatlog_catalog=cat,
         )
 
     def rebuild():
@@ -198,11 +217,14 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         if add:
             msgs.append(add)
         msgs.append(chatlog_msg())
+        msgs.append(memo_msg())
         return msgs
 
     messages = rebuild()
     mlog.new_session()
-    initial_keys = ["system", "first"] + (["add"] if add else []) + ["chatlog"]
+    initial_keys = (
+        ["system", "first"] + (["add"] if add else []) + ["chatlog", "memo"]
+    )
     for m, key in zip(messages, initial_keys):
         mlog.append(m["role"], m["content"], key)
 
@@ -210,25 +232,41 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         messages.append(msg)
         mlog.append(msg["role"], msg["content"], key)
 
-    def roll(with_digest, digest_text=None):
-        nonlocal rolls, usage_tokens, reminded, summary_tried, forced, messages
+    def fold(with_digest, digest_text=None):
+        """Fold the current session into the chatlog document (built and
+        persisted by context_builder as runs/<run_id>/chatlog.json), then
+        reopen with a new session. With a digest the summary is filed; without
+        one the raw session messages are filed so the model can still reach
+        them through chatlog pages."""
+        nonlocal rolls, usage_tokens, reminded, summary_tried, messages
+        nonlocal chatlog_pages
         rolls += 1
         stats["rolls"] = rolls
         if with_digest and digest_text:
-            digests.append(f"----- digest {rolls} -----\n{digest_text}")
+            body = digest_text
+            kind = "digest"
+        else:
+            body = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
+            kind = "raw session"
+        chatlog_pages = context_builder.write_chatlog(
+            mlog.run_dir, mlog.key, f"===== {kind} {rolls} =====\n{body}",
+            ai["page_chars"], cfg["limits"]["sentence_max_ratio"],
+        )
         messages = rebuild()
         usage_tokens = 0
         reminded = False
         summary_tried = False
         mlog.new_session()
-        roll_keys = ["system", "first"] + (["add"] if add else []) + ["chatlog"]
+        roll_keys = (
+            ["system", "first"] + (["add"] if add else []) + ["chatlog", "memo"]
+        )
         for m, key in zip(messages, roll_keys):
             mlog.append(m["role"], m["content"], key)
 
     def ask_summary():
         m = pb.get("chatlog_summarize")
         try:
-            r = backend.chat(messages + [m], pb.response_format("chatlog_summary"), model, cfg)
+            r = backend.chat(messages + [m], pb.response_format("chatlog_summary"), model, ai)
         except Exception as exc:
             warned.append(f"chatlog summary side call failed: {exc}")
             return None
@@ -257,19 +295,15 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         return identity, warned, stats
 
     def stall(why):
-        nonlocal dupes, forced
-        dupes += 1
-        if dupes >= 2:
-            forced = True
-            say(pb.get("stall_to_publish"), "stall_to_publish")
-        else:
-            say(pb.get("dup_page", why=why), "dup_page")
+        nonlocal forced
+        forced = True
+        say(pb.get("stall_to_publish"), "stall_to_publish")
 
     while True:
-        can_roll = (max_turns < 0 or rolls < max_turns) and rolls < ROLL_HARD_CAP
+        can_roll = max_turns < 0 or rolls < max_turns
         if usage_tokens >= ai["force_publish_at"]:
             if can_roll:
-                roll(with_digest=False)
+                fold(with_digest=False)
                 continue
             if not forced:
                 forced = True
@@ -279,15 +313,15 @@ def run_session(context_pkg, pb, cfg, model, mlog):
                 summary_tried = True
                 digest = ask_summary()
                 if digest is not None:
-                    roll(with_digest=True, digest_text=digest)
+                    fold(with_digest=True, digest_text=digest)
                     continue
             elif not can_roll and not reminded:
                 reminded = True
                 say(pb.get("remind"), "remind")
 
         stats["turns"] += 1
-        r = backend.chat(messages, rf, model, cfg)
-        usage_tokens = r["tokens_in"] or _estimate_tokens(messages)
+        r = backend.chat(messages, rf, model, ai)
+        usage_tokens = r["tokens_in"] or _estimate_tokens(messages, ai["estimate_chunk"])
         stats["tokens_in"] += r["tokens_in"]
         stats["tokens_out"] += r["tokens_out"]
         reply = r["content"]
@@ -295,11 +329,8 @@ def run_session(context_pkg, pb, cfg, model, mlog):
 
         obj = _extract_json(reply)
         if obj is None or not isinstance(obj, dict):
-            if bad_json_left > 0:
-                say(pb.get("bad_json_retry", attempt_left=bad_json_left), "bad_json_retry")
-                bad_json_left -= 1
-                continue
-            return bail("reply never became valid JSON")
+            say(pb.get("bad_json_retry"), "bad_json_retry")
+            continue
 
         action = obj.get("action")
         if action == "help":
@@ -311,7 +342,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             tmpl = pb.publish_template["identity"]
             problems = schema.check(ident if isinstance(ident, dict) else {}, tmpl)
             if problems:
-                if retry_left > 0:
+                if forced and retry_left > 0:
                     say(pb.get(
                         "publish_retry",
                         missing="; ".join(p.split(".", 1)[-1] for p in problems),
@@ -319,16 +350,50 @@ def run_session(context_pkg, pb, cfg, model, mlog):
                     ), "publish_retry")
                     retry_left -= 1
                     continue
-                return bail("publish stayed malformed after retries")
+                return bail("publish output malformed")
             identity, norm_warns = _validate_identity(ident)
             warned.extend(norm_warns)
             stats["pages_read"] = len(read_pages)
             return identity, warned, stats
 
-        if forced:
-            forced_retries += 1
-            if forced_retries > MAX_FORCED_RETRIES:
-                return bail(f"kept requesting pages after forced publish ({action!r})")
+        if action == "read_memo":
+            say(pb.get(
+                "memo_deliver", memo_text=memo_text or "(memo is empty)",
+            ), "memo_deliver")
+            continue
+
+        if action == "write_memo":
+            incoming = obj.get("memo")
+            if not isinstance(incoming, str):
+                say(pb.get(
+                    "memo_reject", why="memo field must be a string",
+                ), "memo_reject")
+                continue
+            if len(incoming) > memo_limit:
+                say(pb.get(
+                    "memo_reject", why=f"memo over {memo_limit} chars",
+                ), "memo_reject")
+                continue
+            memo_text = incoming
+            _save_memo(mlog.run_dir, mlog.key, memo_text)
+            say(pb.get("memo_saved", chars=len(memo_text)), "memo_saved")
+            continue
+
+        if action == "read_chatlog":
+            cpage = obj.get("page")
+            ok_c = (
+                isinstance(cpage, int) and not isinstance(cpage, bool)
+                and 1 <= cpage <= len(chatlog_pages)
+            )
+            if not ok_c:
+                stall("missing or out-of-range chatlog page")
+                continue
+            body = chatlog_pages[cpage - 1]
+            say(pb.get(
+                "chatlog_deliver", page=cpage,
+                chatlog_total=len(chatlog_pages), page_text=body,
+            ), "chatlog_deliver")
+            continue
 
         page = obj.get("page")
         ok = (
@@ -342,7 +407,6 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             stall(f"page {page} was already read")
             continue
         read_pages.add(page)
-        dupes = 0
         body = pages[page - 1]["text"] if page <= len(pages) else tail["text"]
         say(pb.get("page_deliver", page=page, page_total=page_total, page_text=body),
             "page_deliver")

@@ -1,12 +1,12 @@
-"""Default extractor: unpack archives with sampling caps, or copy plain files
-and folders.
+"""Default extractor: sample archives (zip/7z) into text files.
 
-Self-contained: no project imports; reads its own config.json/password.json
-from this directory. extract(in_path, out_dir) -> {"files_kept", "warnings"}.
+Only archives are accepted; folders and plain files are refused with a
+warning. Self-contained: no project imports; reads its own config.json and
+password.json from this directory.
+extract(in_path, out_dir) -> {"files_kept", "warnings"}.
 """
 import fnmatch
 import json
-import shutil
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -86,42 +86,6 @@ def _write_member(data, out_dir, rel):
     dest = out_dir / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(data)
-
-
-def _extract_dir(src, out_dir, cfg, warnings):
-    caps = cfg["caps"]
-    tset = {e.lower() for e in cfg["text_exts"]}
-    kept = 0
-    total = 0
-    for p in sorted(src.rglob("*")):
-        if not p.is_file():
-            continue
-        if p.suffix.lower() not in tset:
-            continue
-        if kept >= caps["file_count"]:
-            warnings.append("file count cap reached; remaining files skipped")
-            break
-        rel = p.relative_to(src).as_posix()
-        size = p.stat().st_size
-        if size > caps["per_file_bytes"]:
-            warnings.append(f"skipped {rel}: {size} bytes over per-file cap")
-            continue
-        if total + size > caps["total_bytes"]:
-            warnings.append("total size cap reached; remaining files skipped")
-            break
-        dest = out_dir / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(p, dest)
-        kept += 1
-        total += size
-    return {"files_kept": kept, "warnings": warnings}
-
-
-def _copy_file(src, out_dir, warnings):
-    dest = out_dir / src.name
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, dest)
-    return {"files_kept": 1, "warnings": warnings}
 
 
 def _zip_password(zf, infos, passwords, warnings):
@@ -246,8 +210,12 @@ def extract(in_path, out_dir):
     cfg = _load_cfg()
     passwords = _load_passwords()
     warnings = []
-    if src.is_dir():
-        return _extract_dir(src, out_dir, cfg, warnings)
-    if src.suffix.lower() in ARCHIVE_EXTS:
-        return _extract_zip(src, out_dir, cfg, passwords, warnings)
-    return _copy_file(src, out_dir, warnings)
+    if not src.is_file():
+        warnings.append(f"refused {src.name}: not a file (folders are not archive targets)")
+        return {"files_kept": 0, "warnings": warnings}
+    if src.suffix.lower() not in ARCHIVE_EXTS:
+        warnings.append(f"refused {src.name}: not a zip/7z archive")
+        return {"files_kept": 0, "warnings": warnings}
+    if src.suffix.lower() == ".7z":
+        return _extract_7z(src, out_dir, cfg, passwords, warnings)
+    return _extract_zip(src, out_dir, cfg, passwords, warnings)

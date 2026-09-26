@@ -4,16 +4,17 @@
     "base_url": "http://localhost:1234/v1",
     "model": "",
     "api_key": "lm-studio",
-    "temperature": 0.2,
+    "temperature": 0.7,
     "timeout": 300,
     "page_chars": 3000,
     "remind_at": 32000,
     "force_publish_at": 60000,
-    "max_turns": -1
+    "max_turns": -1,
+    "estimate_chunk": 4,
+    "publish_retries": 3
   },
   "limits": {
     "extract_timeout_s": 1800,
-    "max_text_file_bytes": 33554432,
     "sentence_max_ratio": 0.1
   }
 }

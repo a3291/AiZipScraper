@@ -11,7 +11,7 @@ Runtime tokens are replaced per send via get().
 import json
 from pathlib import Path
 
-from schema import derive
+from common.schema import derive
 
 _TOKEN = "{_contract:"
 

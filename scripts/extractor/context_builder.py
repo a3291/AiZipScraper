@@ -7,7 +7,8 @@ File recognition is delegated to context_scanner.
 import os
 from pathlib import Path
 
-import context_scanner
+from common import paths
+from extractor import context_scanner
 
 
 def _split_sentences(text):
@@ -23,7 +24,38 @@ def _split_sentences(text):
     return [s for s in parts if s]
 
 
-def build(out_dir, page_chars, sentence_max_ratio, max_text_bytes):
+def paginate(text, page_chars, sentence_max_ratio):
+    """Split text into page strings at sentence ends; sentences longer than
+    page_chars * sentence_max_ratio are dropped whole."""
+    max_sent = max(1, int(page_chars * sentence_max_ratio))
+    pages, cur, cur_chars = [], [], 0
+    for sent in _split_sentences(text):
+        if len(sent) > max_sent:
+            continue
+        if cur and cur_chars + len(sent) > page_chars:
+            pages.append("\n".join(cur))
+            cur, cur_chars = [], 0
+        cur.append(sent)
+        cur_chars += len(sent)
+    if cur:
+        pages.append("\n".join(cur))
+    return pages
+
+
+def write_chatlog(run_dir, key, fold_text, page_chars, sentence_max_ratio):
+    """Append a folded session to runs/<run_id>/chatlog.json, re-page the
+    accumulated document and return its pages. chatlog.json is the persisted
+    chatlog-context; the engine reads pages from what this returns."""
+    p = Path(run_dir) / "chatlog.json"
+    doc = paths.read_json(p) if p.exists() else {"packages": {}}
+    pkg = doc["packages"].setdefault(key, {"sections": [], "pages": []})
+    pkg["sections"].append(fold_text)
+    pkg["pages"] = paginate("\n".join(pkg["sections"]), page_chars, sentence_max_ratio)
+    paths.write_json(p, doc)
+    return pkg["pages"]
+
+
+def build(out_dir, page_chars, sentence_max_ratio):
     """Walk out_dir (skipping _-prefixed names), collect text via
     context_scanner, and return {page_chars, pages, tail_page, catalog, stats}."""
     out_dir = Path(out_dir)
@@ -38,7 +70,7 @@ def build(out_dir, page_chars, sentence_max_ratio, max_text_bytes):
             p = Path(root) / name
             rel = p.relative_to(out_dir).as_posix()
             size = p.stat().st_size
-            text = context_scanner.file_to_text(p, max_text_bytes)
+            text = context_scanner.file_to_text(p)
             if text is None:
                 skipped.append((rel, size))
                 continue
@@ -46,18 +78,7 @@ def build(out_dir, page_chars, sentence_max_ratio, max_text_bytes):
             chunks.append(f"## {rel}\n{text.strip()}")
 
     corpus = "\n\n".join(chunks)
-    max_sent = max(1, int(page_chars * sentence_max_ratio))
-    pages, cur, cur_chars = [], [], 0
-    for sent in _split_sentences(corpus):
-        if len(sent) > max_sent:
-            continue
-        if cur and cur_chars + len(sent) > page_chars:
-            pages.append("\n".join(cur))
-            cur, cur_chars = [], 0
-        cur.append(sent)
-        cur_chars += len(sent)
-    if cur:
-        pages.append("\n".join(cur))
+    pages = paginate(corpus, page_chars, sentence_max_ratio)
 
     ext_stats = {}
     for rel, _size, _chars in files:

@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = ROOT / "scripts"
 EXTRACTORS = ROOT / "extractors"
 RUNS_DIR = ROOT / "runs"

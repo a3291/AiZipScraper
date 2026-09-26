@@ -13,14 +13,17 @@ main.py                       entry point
 config.json                   run configuration
 scripts/
   cli.py                      scan / backend commands
-  registry.py                 target registry (single source of target state)
-  backend.py                  AI backend connection
-  prompt_builder.py           prompts.json loader, {_contract:xxx} injection, scene assembly
-  context_scanner.py          file -> text recognition
-  context_builder.py          page packing (sentence-aligned pages, metadata tail page)
   ai_identify.py              conversation engine (chatlog-only, session-split archive)
-  schema.py                   template-led validation
-  run_extractor.py            extractor subprocess (exit code = success)
+  common/                     infrastructure shared by both sides
+    paths.py                  layout constants and JSON IO
+    schema.py                 template-led validation
+    backend.py                AI backend connection
+    prompt_builder.py         prompts.json loader, {_contract:xxx} injection, scene assembly
+    registry.py               target registry (single source of target state)
+  extractor/                  extraction child-process domain
+    run_extractor.py          worker: loads <name>/extractor.py, returns extract() result
+    context_scanner.py        file -> text recognition
+    context_builder.py        page packing (sentence-aligned pages, metadata tail page)
 extractors/
   _contract.json              session_actions + chatlog_summary contracts
   default/
@@ -31,8 +34,10 @@ extractors/
     publish.json              publish document template
 runs/<run_id>/
   registry.json               targets and their states
-  run.json                    extractor subprocess log (exit code, stderr, elapsed)
-  context.json                paged context per target
+  run.json                    extractor run log (outcome, reason, elapsed)
+  context.json                 paged context per target
+  chatlog.json                 folded chatlog document (sections and pages per target)
+  memo.json                    per-target model working notes
   sessions.json               session boundaries and roll count per target
   messages.json               every raw message, tagged with its session
 ```
@@ -47,10 +52,13 @@ python main.py scan <path> --extractor default --workers 4
 
 `scan` registers the files and folders directly under `<path>` (non-recursive;
 hidden entries, `_`-prefixed entries, `runs/` and existing `*.publish.json`
-are skipped), extracts each target in a subprocess pool, runs one identify
+are skipped), extracts each target in a child-process pool, runs one identify
 conversation per target, and writes `<target>.publish.json` next to each
-target. Extractor success is judged by exit code alone; each run's stdout,
-stderr and exit code land in `run.json`.
+target. Extraction normality is judged from `extract()`'s return value: an
+exception, a timeout, a worker crash, a non-dict return or zero kept files
+marks the target `skipped` in the registry and its conversation never runs.
+Each run's outcome (`ok` plus the returned `result` or the `error` reason) and
+elapsed time land in `run.json`.
 
 ## Configuration (config.json)
 
@@ -63,15 +71,17 @@ stderr and exit code land in `run.json`.
 | `ai.page_chars` | characters per content page |
 | `ai.remind_at` | token watermark: ask the model for a chatlog summary and fold |
 | `ai.force_publish_at` | token watermark: fold without a summary |
-| `ai.max_turns` | fold cap; `-1` unlimited; when reached the watermarks fall back to prompt-publish / force-publish |
+| `ai.max_turns` | fold cap; `-1` unlimited; when the cap is reached the watermarks fall back to prompt-publish / force-publish |
+| `ai.estimate_chunk` | chars-per-token divisor used when the backend reports no usage |
+| `ai.publish_retries` | re-input chances for a malformed publish once publish is forced |
 | `limits.extract_timeout_s` | per-target extractor subprocess timeout |
-| `limits.max_text_file_bytes` | largest file packed into pages |
-| `limits.sentence_max_ratio` | sentences longer than page_chars x ratio are dropped whole |
+| `limits.sentence_max_ratio` | sentences longer than page_chars × ratio are dropped whole |
 
 ## Contracts
 
 `extractors/_contract.json` holds both contracts in template form:
-`session_actions` (every model reply: `read_page` / `publish` / `help`) and
+`session_actions` (every model reply: `read_page` / `read_chatlog` /
+`read_memo` / `write_memo` / `publish` / `help`) and
 `chatlog_summary` (the fold summary side call). `schema.py` checks documents
 against a template — filled template values must match literally, empty values
 are slots that must exist with the matching type — and derives the
@@ -83,18 +93,29 @@ and the rendered protocol is injected at load time.
 
 ## Conversation engine
 
-The opening scene is `system | context | chatlog`; every model reply must be
-one JSON object matching `session_actions`. `read_page` delivers a page,
-`publish` ends the session with an identity, `help` re-sends the protocol
-recap. When tokens reach `remind_at` the model is asked (in a side call) to
-summarize the conversation; the digest folds into the chatlog section and a new
-session opens. `force_publish_at` folds without waiting for a summary. Raw
-messages are never discarded: `messages.json` keeps every message under its
-session number, `sessions.json` records the boundaries.
+The opening scene is `system | context | chatlog | memo`; every model reply
+must be one JSON object matching `session_actions`. `read_page` delivers a
+context page (each page once; a repeat or out-of-range request stalls into
+forced publish), `read_chatlog` delivers a chatlog page (rereadable), `publish`
+ends the session with an identity, `help` re-sends the protocol recap. The memo
+is the model's working note for the target: it persists across sessions and
+folds in `runs/<run_id>/memo.json`, opens as the tail page of every session, is
+read with `read_memo` and replaced whole with `write_memo` (a `memo` string
+field, capped at one page; an invalid write is rejected with a `memo_reject`
+prompt and can simply be sent again). When tokens reach `remind_at`
+the model is asked (in a side call) to summarize the conversation; the digest
+is folded into the chatlog document and a new session opens.
+`force_publish_at` folds without waiting for a summary, filing the raw session
+messages instead. The chatlog document is paged like the context (same
+sentence rules) and browsable with `read_chatlog`. Raw messages are never
+discarded: `messages.json` keeps every message under its session number,
+`sessions.json` records the boundaries.
 
-Give-up paths (persistent malformed output, stalling page requests) publish a
-degraded identity — category `unknown`, confidence 0 — with the reason recorded
-in the document's `warnings`.
+Guardrail budgets: every malformed-JSON reply gets a retry prompt; a malformed
+publish gives up at once, unless publish is forced — then it gets
+`ai.publish_retries` re-input chances (default 3) before giving up. Give-up
+paths publish a degraded identity — category `unknown`, confidence 0 — with
+the reason recorded in the document's `warnings`.
 
 ## Publish documents
 

@@ -12,8 +12,33 @@
     },
     "chatlog": {
       "role": "user",
-      "frontier": "The conversation history is compacted into the digests below; raw messages stay archived on disk.\n===== chatlog round {roll_no} | pages read: {pages_read} of {page_total} =====",
-      "text": "{summaries_block}"
+      "frontier": "Conversation history is folded into chatlog pages; request them with read_chatlog.\n===== chatlog round {roll_no} | context pages read: {pages_read} of {page_total} =====",
+      "text": "{chatlog_catalog}"
+    },
+    "chatlog_deliver": {
+      "role": "user",
+      "frontier": "Chatlog page {page} of {chatlog_total}:",
+      "text": "{page_text}"
+    },
+    "memo": {
+      "role": "user",
+      "frontier": "Your memo persists across sessions and folds; read it with read_memo, replace it whole with write_memo (memo field).\n===== memo =====",
+      "text": "{memo_text}"
+    },
+    "memo_deliver": {
+      "role": "user",
+      "frontier": "Memo:",
+      "text": "{memo_text}"
+    },
+    "memo_saved": {
+      "role": "user",
+      "frontier": "Memo saved ({chars} chars).",
+      "text": ""
+    },
+    "memo_reject": {
+      "role": "user",
+      "frontier": "{why}. Your write_memo was ignored; send write_memo again with the full memo text.",
+      "text": ""
     },
     "page_deliver": {
       "role": "user",
@@ -22,8 +47,8 @@
     },
     "help": {
       "role": "user",
-      "frontier": "Protocol recap. {_contract:session_actions}\nidentity keys: title, category, summary, tags, language, confidence.",
-      "text": ""
+      "frontier": "Protocol recap. {_contract:session_actions}",
+      "text": "identity keys: title, category, summary, tags, language, confidence."
     },
     "remind": {
       "role": "user",
@@ -37,17 +62,12 @@
     },
     "bad_json_retry": {
       "role": "user",
-      "frontier": "Your last reply was not one valid JSON object. Reply again with exactly one JSON object ({attempt_left} retries left).",
+      "frontier": "Your last reply was not one valid JSON object. Reply again with exactly one JSON object.",
       "text": ""
     },
     "publish_retry": {
       "role": "user",
       "frontier": "Your publish output is malformed (identity problem: {missing}). Output the publish action again with the full identity; {attempt_left} retries left.",
-      "text": ""
-    },
-    "dup_page": {
-      "role": "user",
-      "frontier": "{why}. Request a different page or publish your conclusion.",
       "text": ""
     },
     "stall_to_publish": {

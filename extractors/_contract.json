@@ -1,8 +1,8 @@
 {
   "session_actions": {
     "enforced_by": "backend response_format + schema.check",
-    "template": {"action": "", "page": null, "identity": null},
-    "enums": {"action": ["read_page", "publish", "help"]}
+    "template": {"action": "", "page": null, "memo": null, "identity": null},
+    "enums": {"action": ["read_page", "read_chatlog", "read_memo", "write_memo", "publish", "help"]}
   },
   "chatlog_summary": {
     "enforced_by": "schema.check",

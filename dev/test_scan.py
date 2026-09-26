@@ -10,9 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import backend
+from common import backend, paths
 import cli
-import paths
 
 PASS = 0
 FAIL = 0
@@ -33,10 +32,11 @@ def make_config(**ai_over):
         "base_url": "http://fake", "model": "fake", "api_key": "",
         "temperature": 0.2, "timeout": 30, "page_chars": 500,
         "remind_at": 900000, "force_publish_at": 990000, "max_turns": -1,
+        "estimate_chunk": 4, "publish_retries": 3,
     }
     ai.update(ai_over)
     cfg = {"concurrency": 1, "ai": ai, "limits": {
-        "extract_timeout_s": 60, "max_text_file_bytes": 1 << 20,
+        "extract_timeout_s": 60,
         "sentence_max_ratio": 0.5}}
     p = tmp / "config.json"
     p.write_text(json.dumps(cfg), "utf-8")
@@ -44,15 +44,13 @@ def make_config(**ai_over):
 
 
 def make_targets(single=False):
+    """Default extractor only accepts archives: every scenario is driven by a
+    zip target. single=True yields a directory holding just one zip."""
     tmp = Path(tempfile.mkdtemp())
     text = "Alpha sentence one. Beta sentence two. " * 20
-    if single:
-        (tmp / "note.txt").write_text(text, "utf-8")
-        return tmp
     with zipfile.ZipFile(tmp / "pack.zip", "w") as zf:
         zf.writestr("inner/readme.txt", text)
         zf.writestr("inner/data.csv", "x,y\n1,2\n")
-    (tmp / "note.txt").write_text(text, "utf-8")
     return tmp
 
 
@@ -115,16 +113,15 @@ def test_direct_publish():
     reg, msgs, ses, run_log, ctx = load_run(runs_dir)
     ok(all(e["state"] == "published" for e in reg["targets"].values()),
         "e2e: all targets published")
-    ok(len(run_log["runs"]) == 2, "e2e: run.json has one entry per extractor run")
-    ok(all(r["exit"] == 0 for r in run_log["runs"]), "e2e: extractor exits 0")
-    ok(set(ctx["packages"].keys()) == {"t1", "t2"}, "e2e: context per target")
-    zip_side = read_sidecar(targets / "pack.zip")
-    ok(zip_side["identity"]["title"] == "Sample Pack", "e2e: identity filled")
-    ok(zip_side["warnings"] == [], "e2e: warnings empty")
-    txt_side = read_sidecar(targets / "note.txt")
-    ok(txt_side["identity"]["category"] == "documents", "e2e: second sidecar")
-    ok(set(zip_side.keys()) == {"identity", "warnings"}, "e2e: no extra keys")
-    ok(list(zip_side["identity"].keys()) ==
+    ok(len(run_log["runs"]) == 1, "e2e: run.json has one entry per extractor run")
+    ok(all(r["ok"] for r in run_log["runs"]), "e2e: extractor runs normal")
+    ok(set(ctx["packages"].keys()) == {"t1"}, "e2e: context per target")
+    side = read_sidecar(targets / "pack.zip")
+    ok(side["identity"]["title"] == "Sample Pack", "e2e: identity filled")
+    ok(side["warnings"] == [], "e2e: warnings empty")
+    ok(side["identity"]["category"] == "documents", "e2e: category filled")
+    ok(set(side.keys()) == {"identity", "warnings"}, "e2e: no extra keys")
+    ok(list(side["identity"].keys()) ==
        ["title", "category", "summary", "tags", "language", "confidence"],
        "e2e: identity key order from template")
     shutil.rmtree(runs_dir, ignore_errors=True)
@@ -141,10 +138,10 @@ def test_page_flow():
     reg, msgs, ses, run_log, ctx = load_run(runs_dir)
     keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
     ok("page_deliver" in keys, "flow: page delivered")
-    ok(keys.count("dup_page") == 1, "flow: duplicate page warned once")
-    entry = reg["targets"][str(targets / "note.txt")]
+    ok(keys.count("stall_to_publish") == 1, "flow: stall warned once")
+    entry = reg["targets"][str(targets / "pack.zip")]
     ok(entry["state"] == "published", "flow: published after flow")
-    side = read_sidecar(targets / "note.txt")
+    side = read_sidecar(targets / "pack.zip")
     ok(side["identity"]["confidence"] == 0.9, "flow: confidence intact")
     shutil.rmtree(runs_dir, ignore_errors=True)
     shutil.rmtree(targets, ignore_errors=True)
@@ -154,23 +151,28 @@ def test_publish_retry():
     bad = json.dumps({"action": "publish", "page": None,
                       "identity": {"title": "x"}})
     good = json.dumps({"action": "publish", "page": None, "identity": IDENTITY})
-    code, targets, runs_dir = run_scan([bad, good], single=True)
+    code, targets, runs_dir = run_scan(
+        [json.dumps({"action": "read_page", "page": 1, "identity": None}),
+         bad, good],
+        single=True, max_turns=0, force_publish_at=5)
     reg, msgs, ses, run_log, ctx = load_run(runs_dir)
     keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+    ok("force_publish" in keys, "retry: forced publish active")
     ok(keys.count("publish_retry") == 1, "retry: one retry prompt")
-    ok(reg["targets"][str(targets / "note.txt")]["state"] == "published",
+    ok(reg["targets"][str(targets / "pack.zip")]["state"] == "published",
         "retry: published after fix")
     shutil.rmtree(runs_dir, ignore_errors=True)
     shutil.rmtree(targets, ignore_errors=True)
 
 
-def test_bad_json_bail():
-    code, targets, runs_dir = run_scan(["not json", "still not json"])
+def test_bad_json_retry():
+    good = json.dumps({"action": "publish", "page": None, "identity": IDENTITY})
+    code, targets, runs_dir = run_scan(["not json", good])
     reg, msgs, ses, run_log, ctx = load_run(runs_dir)
-    side = read_sidecar(targets / "note.txt")
-    ok(side["identity"]["category"] == "unknown", "bail: degraded identity")
-    ok(any("gave up" in w for w in side["warnings"]), "bail: reason in warnings")
-    ok(side["identity"]["title"] == "", "bail: empty title")
+    keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+    ok(keys.count("bad_json_retry") == 1, "bad json: retry prompt sent")
+    ok(reg["targets"][str(targets / "pack.zip")]["state"] == "published",
+        "bad json: published after fix")
     shutil.rmtree(runs_dir, ignore_errors=True)
     shutil.rmtree(targets, ignore_errors=True)
 
@@ -206,17 +208,94 @@ def test_help_action():
     reg, msgs, ses, run_log, ctx = load_run(runs_dir)
     keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
     ok(keys.count("help") == 1, "help: recap sent once")
-    ok(reg["targets"][str(targets / "note.txt")]["state"] == "published", "help: published")
+    ok(reg["targets"][str(targets / "pack.zip")]["state"] == "published", "help: published")
     shutil.rmtree(runs_dir, ignore_errors=True)
     shutil.rmtree(targets, ignore_errors=True)
+
+
+def test_read_chatlog():
+    cfg_path, _ = make_config(force_publish_at=5)
+    tmp_t = make_targets(single=True)
+    old_runs = paths.RUNS_DIR
+    paths.RUNS_DIR = Path(tempfile.mkdtemp())
+    try:
+        fake_backend([
+            json.dumps({"action": "read_page", "page": 1, "identity": None}),
+            json.dumps({"action": "read_chatlog", "page": 1, "identity": None}),
+            json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
+        ])
+        code = cli.main(["scan", str(tmp_t), "--config", str(cfg_path), "--workers", "1"])
+        reg, msgs, ses, run_log, ctx = load_run(paths.RUNS_DIR)
+        keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+        ok("chatlog_deliver" in keys, "chatlog: page delivered")
+        ok(len(ses["packages"]["t1"]["sessions"]) >= 2, "chatlog: fold opened session")
+        ok(reg["targets"][str(tmp_t / "pack.zip")]["state"] == "published",
+            "chatlog: published after reading chatlog")
+    finally:
+        paths.RUNS_DIR = old_runs
+        shutil.rmtree(tmp_t, ignore_errors=True)
+        shutil.rmtree(paths.RUNS_DIR, ignore_errors=True)
+
+
+def test_memo():
+    replies = [
+        json.dumps({"action": "write_memo", "page": None,
+                    "memo": "Found: dataset", "identity": None}),
+        json.dumps({"action": "read_memo", "page": None, "memo": None,
+                    "identity": None}),
+        json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
+    ]
+    code, targets, runs_dir = run_scan(replies, single=True, force_publish_at=5)
+    ok(code == 0, "memo: exit 0")
+    run_dir = next(runs_dir.iterdir())
+    reg = json.loads((run_dir / "registry.json").read_text("utf-8"))
+    msgs = json.loads((run_dir / "messages.json").read_text("utf-8"))
+    ok(reg["targets"][str(targets / "pack.zip")]["state"] == "published",
+        "memo: published")
+    memo_doc = json.loads((run_dir / "memo.json").read_text("utf-8"))
+    ok(memo_doc["packages"]["t1"]["text"] == "Found: dataset",
+        "memo: persisted in memo.json")
+    keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+    ok("memo_saved" in keys and "memo_deliver" in keys,
+        "memo: saved and delivered in conversation")
+    ok(keys.count("memo") >= 2, "memo: tail page present in every session")
+
+
+def test_refused_target():
+    """A plain file target is refused by the archive-only extractor: it fails
+    in the registry and never reaches the conversation."""
+    import tempfile
+    tmp = Path(tempfile.mkdtemp())
+    (tmp / "plain.txt").write_text("x", "utf-8")
+    cfg_path, _ = make_config()
+    old_runs = paths.RUNS_DIR
+    paths.RUNS_DIR = Path(tempfile.mkdtemp())
+    try:
+        fake_backend([json.dumps({"action": "publish", "page": None, "identity": IDENTITY})])
+        code = cli.main(["scan", str(tmp / "plain.txt"), "--config", str(cfg_path), "--workers", "1"])
+        ok(code == 0, "refuse: exit 0")
+        run_dir = next(paths.RUNS_DIR.iterdir())
+        reg = json.loads((run_dir / "registry.json").read_text("utf-8"))
+        msgs_path = run_dir / "messages.json"
+        entry = reg["targets"][str(tmp / "plain.txt")]
+        ok(entry["state"] == "skipped", "refuse: target skipped")
+        ok("not a zip/7z archive" in entry.get("error", ""), "refuse: reason recorded")
+        ok(not msgs_path.exists(), "refuse: no conversation opened")
+    finally:
+        paths.RUNS_DIR = old_runs
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(paths.RUNS_DIR, ignore_errors=True)
 
 
 if __name__ == "__main__":
     test_direct_publish()
     test_page_flow()
     test_publish_retry()
-    test_bad_json_bail()
+    test_bad_json_retry()
     test_forced_roll()
     test_help_action()
+    test_read_chatlog()
+    test_memo()
+    test_refused_target()
     print(f"test_scan: {PASS} pass, {FAIL} fail")
     sys.exit(1 if FAIL else 0)

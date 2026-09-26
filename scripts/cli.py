@@ -9,7 +9,7 @@ target state.
 import argparse
 import copy
 import json
-import subprocess
+import multiprocessing
 import sys
 import threading
 import time
@@ -17,12 +17,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import ai_identify
-import backend
-import context_builder
-import paths
-import prompt_builder
-import registry
-import schema
+from common import backend, paths, prompt_builder, registry, schema
+from extractor import context_builder, run_extractor
 
 _CTX_LOCK = threading.Lock()
 
@@ -66,37 +62,49 @@ def _archive_pkg(run_dir, filename, key, pkg):
 
 
 def _extract_one(name, target, entry, run_dir, timeout_s):
+    """Run extract() in a child process; judge normality from its return.
+
+    Abnormal (exception, timeout, worker death, non-dict or zero kept files)
+    yields (None, reason). Normal yields (result_dict, None).
+    """
     out_dir = Path(run_dir) / entry["out_dir"]
-    cmd = [sys.executable, str(paths.SCRIPTS / "run_extractor.py"), name, target, str(out_dir)]
+    q = multiprocessing.Queue()
     start = time.monotonic()
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text="utf-8", timeout=timeout_s)
-        exit_code, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
-    except subprocess.TimeoutExpired as exc:
-        exit_code = 3
-        stdout = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        stderr = f"timeout after {timeout_s}s"
-    except Exception as exc:
-        exit_code, stdout, stderr = 3, "", repr(exc)
+    proc = multiprocessing.Process(
+        target=run_extractor.run, args=(name, target, str(out_dir), q))
+    proc.start()
+    proc.join(timeout_s)
+    elapsed = round(time.monotonic() - start, 2)
+    result, err = None, None
+    if proc.is_alive():
+        proc.terminate()
+        proc.join()
+        err = f"timeout after {timeout_s}s"
+    elif q.empty():
+        err = f"extractor died (exit {proc.exitcode})"
+    else:
+        tag, payload = q.get()
+        if tag == "err":
+            err = payload
+        elif not isinstance(payload, dict):
+            err = f"extractor returned {type(payload).__name__}, expected dict"
+        else:
+            kept = payload.get("files_kept")
+            if not isinstance(kept, int) or isinstance(kept, bool) or kept <= 0:
+                warns = "; ".join(str(w) for w in payload.get("warnings", []))
+                err = warns or f"extractor kept no files (files_kept={kept!r})"
+            else:
+                result = payload
     registry.log_extractor_run(run_dir, {
         "key": entry["key"],
-        "path": target,
-        "exit": exit_code,
-        "stdout": stdout,
-        "stderr": stderr,
-        "elapsed_s": round(time.monotonic() - start, 2),
+        "name": name,
+        "target": target,
+        "ok": err is None,
+        **({"error": err} if err else {"result": result}),
+        "elapsed_s": elapsed,
         "at": paths.now(),
     })
-    result = None
-    if exit_code == 0 and stdout.strip():
-        try:
-            result = json.loads(stdout)
-        except ValueError:
-            result = None
-    if result is None:
-        err = stderr.strip().splitlines()[-1] if stderr.strip() else f"exit {exit_code}"
-        return None, err
-    return result, None
+    return result, err
 
 
 def _identify_one(pb, cfg, model, target, entry, result, run_dir):
@@ -104,8 +112,7 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
     limits = cfg["limits"]
     out_dir = Path(run_dir) / entry["out_dir"]
     pkg = context_builder.build(
-        out_dir, ai["page_chars"],
-        limits["sentence_max_ratio"], limits["max_text_file_bytes"],
+        out_dir, ai["page_chars"], limits["sentence_max_ratio"],
     )
     _archive_pkg(run_dir, "context.json", entry["key"], pkg)
     mlog = ai_identify.MessageLog(run_dir, entry["key"])
@@ -129,7 +136,7 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
 def cmd_scan(args):
     cfg = ai_identify.load_config(args.config)
     try:
-        model = backend.resolve_model(cfg)
+        model = backend.resolve_model(cfg["ai"])
     except Exception as exc:
         print(f"FAIL backend: {exc}")
         return 1
@@ -154,13 +161,13 @@ def cmd_scan(args):
     def do_extract(item):
         path, entry = item
         result, err = _extract_one(args.extractor, path, entry, run_dir, timeout_s)
-        if result is None:
-            registry.update(run_dir, path, state="failed", error=err)
-            print(f"  [extract] {entry['key']} FAILED: {err}")
-        else:
-            registry.update(run_dir, path, state="extracted")
-            extract_results[path] = result if isinstance(result, dict) else {}
-            print(f"  [extract] {entry['key']} ok: {Path(path).name}")
+        if err is not None:
+            registry.update(run_dir, path, state="skipped", error=err)
+            print(f"  [extract] {entry['key']} skipped: {err}")
+            return
+        registry.update(run_dir, path, state="extracted")
+        extract_results[path] = result
+        print(f"  [extract] {entry['key']} ok: {Path(path).name}")
 
     def do_identify(item):
         path, entry = item
@@ -186,10 +193,11 @@ def cmd_scan(args):
 
 def cmd_backend(args):
     cfg = ai_identify.load_config(args.config)
-    if not backend.endpoint_available(cfg):
-        print(f"FAIL: {backend.endpoint(cfg)} unreachable")
+    ai = cfg["ai"]
+    if not backend.endpoint_available(ai):
+        print(f"FAIL: {backend.endpoint(ai)} unreachable")
         return 1
-    model = backend.resolve_model(cfg)
+    model = backend.resolve_model(ai)
     contract = {
         "name": "ping",
         "strict": True,
@@ -200,8 +208,8 @@ def cmd_backend(args):
             "additionalProperties": False,
         },
     }
-    r = backend.chat([{"role": "user", "content": 'Reply with {"ok": true}'}], contract, model, cfg)
-    print(f"OK: {backend.endpoint(cfg)} model={model} reply={r['content'][:80]!r} in {r['seconds']}s")
+    r = backend.chat([{"role": "user", "content": 'Reply with {"ok": true}'}], contract, model, ai)
+    print(f"OK: {backend.endpoint(ai)} model={model} reply={r['content'][:80]!r} in {r['seconds']}s")
     return 0
 
 
