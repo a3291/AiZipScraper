@@ -22,22 +22,22 @@
     },
     "memo": {
       "role": "user",
-      "frontier": "Your memo persists across sessions and rolls; read it with read_memo, replace it whole with write_memo (memo field).\n===== memo =====",
-      "text": "{memo_text}"
+      "frontier": "Your memo is an append-only paged document that persists across sessions and rolls ({memo_total} pages so far); append with write_memo (memo field), request pages with read_memo (page field). The latest page is below.\n===== memo =====",
+      "text": "{memo_tail}"
     },
     "memo_deliver": {
       "role": "user",
-      "frontier": "Memo:",
-      "text": "{memo_text}"
+      "frontier": "Memo page {page} of {memo_total}:",
+      "text": "{page_text}"
     },
     "memo_saved": {
       "role": "user",
-      "frontier": "Memo saved ({chars} chars).",
+      "frontier": "Memo appended ({chars} chars).",
       "text": ""
     },
     "memo_reject": {
       "role": "user",
-      "frontier": "{why}. Your write_memo was ignored; send write_memo again with the full memo text.",
+      "frontier": "{why}. Your write_memo was ignored; send write_memo again with the memo text to append.",
       "text": ""
     },
     "page_deliver": {

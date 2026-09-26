@@ -9,6 +9,10 @@ paged conversation, and write a `publish.json` next to the target.
 Inspired by media library scrapers (like Plex): each package keeps a
 searchable, verifiable profile next to the file.
 
+This project was built with the help of a large language model, so things can
+be a bit messy — I have fixed what I could. My code is far from masterful; the
+goal throughout has simply been a small, working tool.
+
 ## Layout
 
 ```
@@ -38,8 +42,7 @@ runs/<run_id>/
   run.json                    extractor subprocess records
   context.json                paged context per target
   chatlog.json                rolled-up chatlog document per target
-  memo.json                   model working notes per target
-  sessions.json               session boundaries per target
+  memo.json                   append-only paged memo document per target
   messages.json               every raw message with its session number
   publishes/                  complete copies of each <target>.publish.json
 ```
@@ -114,7 +117,8 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
 4. **identify** — one conversation per target. Opening scene:
    system, context (head page: the catalog), optional `add`, chatlog (tail
    page), memo. Every raw message is archived to `messages.json` with its
-   session number; `sessions.json` records session boundaries.
+   session number — sessions are divided right there; a summary fold opens
+   the next session.
 5. **publish** — the template `publish.json` is filled with the identity the
    model produced — publish is the pure content conclusion, no process notes
    from any domain (extractor notes stay in `run.json`, conversation notes go
@@ -132,10 +136,11 @@ The model drives with one JSON action per turn
   page is the last). Pages already read or out-of-range requests stall into
   publish.
 - `read_chatlog` — request a chatlog page; chatlog pages stay rereadable.
-- `read_memo` / `write_memo` — read the memo; replace it whole with the
-  `memo` field. The memo is per target at `runs/<run_id>/memo.json`, persists
-  across sessions and rolls, and is capped at `page_chars`; non-string or
-  oversized writes are refused with `memo_reject`.
+- `read_memo` / `write_memo` — the memo is an append-only paged document,
+  same shape as the chatlog: `write_memo` appends the `memo` field as a new
+  section, `read_memo` requests a page by number. It lives per target at
+  `runs/<run_id>/memo.json`, persists across sessions and rolls, and opens
+  showing its latest page; non-string writes are refused with `memo_reject`.
 - `publish` — final identity. A malformed publish before any force aborts the
   target as `error` (no file written); after force it gets `publish_retries`
   re-input chances.

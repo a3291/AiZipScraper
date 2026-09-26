@@ -42,22 +42,18 @@ def load_config(path=None):
 
 class MessageLog:
     """Appends every raw message (with its session number) to messages.json;
-    session boundaries live in sessions.json."""
+    the session number of the next message derives from the archived ones."""
 
     def __init__(self, run_dir, key):
         self.run_dir = Path(run_dir)
         self.key = key
         self._entries = read_pkgs(self.run_dir / "messages.json")["packages"].get(key, [])
-        self._sessions = (
-            read_pkgs(self.run_dir / "sessions.json")["packages"]
-            .get(key, {"sessions": []})["sessions"]
+        self.session = max(
+            (e["session"] for e in self._entries if "session" in e), default=0
         )
-        self.session = len(self._sessions)
 
     def new_session(self):
         self.session += 1
-        self._sessions.append({"no": self.session})
-        update_pkg(self.run_dir / "sessions.json", self.key, {"sessions": self._sessions})
 
     def append(self, role, text, prompt_key=None):
         entry = {"session": self.session, "role": role, "text": text}
@@ -102,19 +98,18 @@ def run_session(context_pkg, pb, cfg, model, mlog):
     read_pages = set()
     chatlog_pages = []
     usage_tokens = 0
-    memo_limit = ai["page_chars"]
 
     def _load_memo(run_dir, key):
-        return read_pkgs(Path(run_dir) / "memo.json")["packages"].get(key, {}).get("text", "")
+        return read_pkgs(Path(run_dir) / "memo.json")["packages"].get(key, {}).get("pages", [])
 
-    def _save_memo(run_dir, key, text):
-        update_pkg(Path(run_dir) / "memo.json", key, {"text": text})
-
-    memo_text = _load_memo(mlog.run_dir, mlog.key)
+    memo_pages = _load_memo(mlog.run_dir, mlog.key)
 
     def memo_msg():
-        body = memo_text if memo_text else "(memo is empty)"
-        return pb.get("memo", memo_text=body)
+        if memo_pages:
+            tail_text, total = memo_pages[-1], len(memo_pages)
+        else:
+            tail_text, total = "(memo is empty)", 0
+        return pb.get("memo", memo_total=total, memo_tail=tail_text)
 
     rolls = 0
     max_turns = ai["max_turns"]
@@ -178,8 +173,9 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         else:
             body = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
             kind = "raw"
-        chatlog_pages = context_builder.write_chatlog(
-            mlog.run_dir, mlog.key, f"===== {kind} {rolls} =====\n{body}",
+        chatlog_pages = context_builder.write_doc(
+            mlog.run_dir, mlog.key, "chatlog.json",
+            f"===== {kind} {rolls} =====\n{body}",
             ai["page_chars"], cfg["limits"]["sentence_max_ratio"],
         )
         usage_tokens = 0
@@ -277,7 +273,18 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             return ident, warned, stats
 
         if action == "read_memo":
-            say("memo_deliver", memo_text=memo_text or "(memo is empty)")
+            mpage = obj.get("page")
+            ok_m = (
+                isinstance(mpage, int) and not isinstance(mpage, bool)
+                and 1 <= mpage <= len(memo_pages)
+            )
+            if not ok_m:
+                stall()
+                continue
+            say(
+                "memo_deliver", page=mpage,
+                memo_total=len(memo_pages), page_text=memo_pages[mpage - 1],
+            )
             continue
 
         if action == "write_memo":
@@ -285,12 +292,11 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             if not isinstance(incoming, str):
                 say("memo_reject", why="memo field must be a string")
                 continue
-            if len(incoming) > memo_limit:
-                say("memo_reject", why=f"memo over {memo_limit} chars")
-                continue
-            memo_text = incoming
-            _save_memo(mlog.run_dir, mlog.key, memo_text)
-            say("memo_saved", chars=len(memo_text))
+            memo_pages = context_builder.write_doc(
+                mlog.run_dir, mlog.key, "memo.json", incoming,
+                ai["page_chars"], cfg["limits"]["sentence_max_ratio"],
+            )
+            say("memo_saved", chars=len(incoming))
             continue
 
         if action == "read_chatlog":

@@ -6,6 +6,8 @@ AI 驱动的压缩包/文件内容刮削器：登记目标，用可插拔提取�
 
 灵感来自媒体库刮削器（如 Plex）：每个包在文件旁留有一份可检索、可核验的档案。
 
+本项目使用了大语言模型开发，所以有些混乱，已经尽力修正，本人代码并不是精湛，目前始终处于开发一个小工具的目的。
+
 ## 布局
 
 ```
@@ -35,8 +37,7 @@ runs/<run_id>/
   run.json                    提取子进程运行记录
   context.json                每目标的分页上下文
   chatlog.json                每目标滚页而成的 chatlog 文档
-  memo.json                   每目标的模型工作笔记
-  sessions.json               每目标的 session 边界
+  memo.json                   每目标的只追加分页 memo 文档
   messages.json               逐条原始消息，带 session 号
   publishes/                  每份 <目标>.publish.json 的完整拷贝
 ```
@@ -107,7 +108,7 @@ python main.py scan D:\downloads --workers 4
    `_` 开头的名字跳过。
 4. **识别** — 每目标一场会话。开卷场景：system、context（首页：目录）、
    可选 `add`、chatlog（尾页）、memo。每条原始消息带 session 号
-   归档进 `messages.json`；`sessions.json` 记录 session 边界。
+   归档进 `messages.json`——session 划分就记在这里；总结折入后开新 session。
 5. **发布** — 用模型产出的 identity 填模板 `publish.json`——publish 是纯
    内容结论，不带任何域的过程注记（提取记录留 `run.json`，会话注记走
    控制台）——自检通过后写为 `<目标名>.publish.json`，完整拷贝存入
@@ -122,9 +123,10 @@ python main.py scan D:\downloads --workers 4
 - `read_page` — 请求上下文页（第 1 页是目录；元数据页是最后一页）。
   已读页或越界请求停滞进入发布。
 - `read_chatlog` — 请求 chatlog 页；chatlog 页可重复读。
-- `read_memo` / `write_memo` — 读笔记；用 `memo` 字段整文覆盖。笔记按目标
-  存于 `runs/<run_id>/memo.json`，跨 session 与滚页保留，上限 `page_chars`；
-  非字符串或超长写入以 `memo_reject` 拒绝。
+- `read_memo` / `write_memo` — memo 是只允许追加的分页文档，与 chatlog 同构：
+  `write_memo` 把 `memo` 字段追加为新段落，`read_memo` 按页号请求。
+  笔记按目标存于 `runs/<run_id>/memo.json`，跨 session 与滚页保留，
+  开卷默认展示尾页；非字符串写入以 `memo_reject` 拒绝。
 - `publish` — 最终 identity。未进入强制状态时格式错误的 publish 直接放弃
   （目标记 `error`，不写文件）；强制后给 `publish_retries` 次重新输入机会。
 - `help` — 协议复述，随时可调。
