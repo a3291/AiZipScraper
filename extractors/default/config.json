@@ -1,0 +1,16 @@
+{
+  "caps": {
+    "per_file_bytes": 262144,
+    "total_bytes": 4194304,
+    "file_count": 8,
+    "list_entries": 30000
+  },
+  "text_exts": [
+    ".txt", ".md", ".csv", ".json", ".xml", ".html", ".htm", ".ini",
+    ".log", ".py", ".js", ".srt", ".nfo", ".url", ".cfg", ".yaml", ".yml"
+  ],
+  "notable": [
+    "readme*", "*.exe", "*.msi", "*.dll", "*.bat", "*.cmd", "*.ps1",
+    "*.url", "*.lnk", "password*", "auth*", "*.key", "license*"
+  ]
+}

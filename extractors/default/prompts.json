@@ -1,0 +1,67 @@
+{
+  "prompts": {
+    "system": {
+      "role": "system",
+      "frontier": "{_contract:session_actions} identity keys: title (concise name), category (dataset/media/software/documents/mixed/unknown), summary (two or three sentences), tags (array), language (array of language codes), confidence (0 to 1). When evidence is insufficient use category unknown and lower the confidence. Output exactly one JSON object.",
+      "text": "You are an archive content analyzer."
+    },
+    "first": {
+      "role": "user",
+      "frontier": "Evidence material is laid out page by page; content pages are 1..N and the metadata page is the last page. Request pages with read_page.",
+      "text": "{catalog}\n\n{tail}"
+    },
+    "chatlog": {
+      "role": "user",
+      "frontier": "The conversation history is compacted into the digests below; raw messages stay archived on disk.\n===== chatlog round {roll_no} | pages read: {pages_read} of {page_total} =====",
+      "text": "{summaries_block}"
+    },
+    "page_deliver": {
+      "role": "user",
+      "frontier": "Page {page} of {page_total}:",
+      "text": "{page_text}"
+    },
+    "help": {
+      "role": "user",
+      "frontier": "Protocol recap. {_contract:session_actions}\nidentity keys: title, category, summary, tags, language, confidence.",
+      "text": ""
+    },
+    "remind": {
+      "role": "user",
+      "frontier": "The context is near the limit. Publish your current conclusion now.",
+      "text": ""
+    },
+    "force_publish": {
+      "role": "user",
+      "frontier": "Publish your conclusion now. Do not request more pages.",
+      "text": ""
+    },
+    "bad_json_retry": {
+      "role": "user",
+      "frontier": "Your last reply was not one valid JSON object. Reply again with exactly one JSON object ({attempt_left} retries left).",
+      "text": ""
+    },
+    "publish_retry": {
+      "role": "user",
+      "frontier": "Your publish output is malformed (identity problem: {missing}). Output the publish action again with the full identity; {attempt_left} retries left.",
+      "text": ""
+    },
+    "dup_page": {
+      "role": "user",
+      "frontier": "{why}. Request a different page or publish your conclusion.",
+      "text": ""
+    },
+    "stall_to_publish": {
+      "role": "user",
+      "frontier": "Page requests are stalling. Publish your current conclusion now.",
+      "text": ""
+    },
+    "chatlog_summarize": {
+      "role": "user",
+      "frontier": "{_contract:chatlog_summary}",
+      "text": "Summarize the conversation so far: the pages read and their key information, the current progress, and the follow-up plan."
+    },
+    "chatlog_summarize_reply": {
+      "role": "assistant"
+    }
+  }
+}

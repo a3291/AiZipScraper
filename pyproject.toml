@@ -1,7 +1,7 @@
 [project]
-name = "archive-scraper"
-version = "0.1.0"
-description = "AI-powered scraper for archives and files"
+name = "aiscraper"
+version = "0.2.0"
+description = "AI-driven content scraper for archives and files"
 license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -10,4 +10,4 @@ dependencies = [
 ]
 
 [project.scripts]
-scraper = "main:main"
+aiscraper = "main:main"
