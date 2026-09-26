@@ -1,137 +1,145 @@
-English | [简体中文](README.zh-CN.md)
+[English](README.md) | 简体中文
 
 # AiScraper
 
-AI-driven content scraper for archives and files: register targets, extract
-text with a pluggable extractor, and let a local LLM identify each target
-through a paged conversation, writing one `publish.json` next to each target.
+AI-driven content scraper for archives and files: register targets, pull text
+through a pluggable extractor, let a local LLM identify each target through a
+paged conversation, and write a `publish.json` next to the target.
 
 ## Layout
 
 ```
-main.py                       entry point
+main.py                       entry
 config.json                   run configuration
 scripts/
   cli.py                      scan / backend commands
-  ai_identify.py              conversation engine (chatlog-only, session-split archive)
-  common/                     infrastructure shared by both sides
-    paths.py                  layout constants and JSON IO
+  ai_identify.py              conversation engine (chatlog-only mode, session archiving)
+  common/                     shared infrastructure
+    paths.py                  layout constants, JSON IO
     schema.py                 template-led validation
-    backend.py                AI backend connection
-    prompt_builder.py         prompts.json loader, {_contract:xxx} injection, scene assembly
+    backend.py                AI backend access
+    prompt_builder.py          prompts.json loading, {_contract:xxx} injection
     registry.py               target registry (single source of target state)
-  extractor/                  extraction child-process domain
+  extractor/                  extraction subprocess domain
     run_extractor.py          worker: loads <name>/extractor.py, returns extract() result
     context_scanner.py        file -> text recognition
-    context_builder.py        page packing (sentence-aligned pages, metadata tail page)
+    context_builder.py        paged packing (sentence-aligned pages, metadata tail page)
 extractors/
   _contract.json              session_actions + chatlog_summary contracts
   default/
-    extractor.py              zip/7z sampling extractor (self-contained)
-    config.json               extraction caps and whitelists
-    password.json             archive password candidates
-    prompts.json              prompt registry: {role, frontier, text}
+    extractor.py              zip/7z sampling extractor
+    config.json               extractor caps (per-file/total bytes, file count, listing)
+    password.json             password candidates for encrypted archives
+    prompts.json              conversation prompt registry ({role, frontier, text})
     publish.json              publish document template
 runs/<run_id>/
-  registry.json               targets and their states
-  run.json                    extractor run log (outcome, reason, elapsed)
-  context.json                 paged context per target
-  chatlog.json                 folded chatlog document (sections and pages per target)
-  memo.json                    per-target model working notes
-  sessions.json               session boundaries and roll count per target
-  messages.json               every raw message, tagged with its session
+  registry.json               target states
+  run.json                    extractor subprocess records
+  context.json                paged context per target
+  chatlog.json                folded chatlog document per target
+  memo.json                   model working notes per target
+  sessions.json               session boundaries per target
+  messages.json               every raw message with its session number
 ```
 
-## Usage
+## Install
 
 ```
-python main.py backend                       check backend connectivity
-python main.py scan <path>                   one pipeline: register -> extract -> identify -> publish
-python main.py scan <path> --extractor default --workers 4
+pip install pyzipper py7zr
 ```
 
-`scan` registers the files and folders directly under `<path>` (non-recursive;
-hidden entries, `_`-prefixed entries, `runs/` and existing `*.publish.json`
-are skipped), extracts each target in a child-process pool, runs one identify
-conversation per target, and writes `<target>.publish.json` next to each
-target. Extraction normality is judged from `extract()`'s return value: an
-exception, a timeout, a worker crash, a non-dict return or zero kept files
-marks the target `skipped` in the registry and its conversation never runs.
-Each run's outcome (`ok` plus the returned `result` or the `error` reason) and
-elapsed time land in `run.json`.
+## Quick start
+
+```
+python main.py backend
+python main.py scan D:\downloads --workers 4
+```
+
+Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
+(scan is non-recursive; one conversation per target; publishes
+`<target>.publish.json` next to each target).
 
 ## Configuration (config.json)
 
-| key | meaning |
-|---|---|
-| `concurrency` | parallel workers for `scan` |
-| `ai.base_url` | OpenAI-compatible endpoint (required, non-empty) |
-| `ai.model` | model id; empty picks the first model the endpoint lists |
-| `ai.temperature` / `ai.timeout` | sampling and HTTP timeout |
-| `ai.page_chars` | characters per content page |
-| `ai.remind_at` | token watermark: ask the model for a chatlog summary and fold |
-| `ai.force_publish_at` | token watermark: fold without a summary |
-| `ai.max_turns` | fold cap; `-1` unlimited; when the cap is reached the watermarks fall back to prompt-publish / force-publish |
-| `ai.estimate_chunk` | chars-per-token divisor used when the backend reports no usage |
-| `ai.publish_retries` | re-input chances for a malformed publish once publish is forced |
-| `limits.extract_timeout_s` | per-target extractor subprocess timeout |
-| `limits.sentence_max_ratio` | sentences longer than page_chars × ratio are dropped whole |
+| key | default | meaning |
+|---|---|---|
+| concurrency | 4 | parallel workers for extract and identify pools |
+| ai.base_url | http://localhost:1234/v1 | OpenAI-compatible endpoint (required) |
+| ai.model | (empty) | model name; empty takes the first model the endpoint lists |
+| ai.api_key | lm-studio | bearer token when the endpoint asks for one |
+| ai.temperature | 0.7 | sampling temperature |
+| ai.timeout | 300 | per-request timeout in seconds |
+| ai.page_chars | 3000 | page size in characters |
+| ai.remind_at | 32000 | watermark: ask for a summary and fold (remind when capped) |
+| ai.force_publish_at | 60000 | watermark: fold raw messages (force publish when capped) |
+| ai.max_turns | -1 | fold cap; -1 unlimited |
+| ai.estimate_chunk | 4 | chars-per-token estimate when usage is not reported |
+| ai.publish_retries | 3 | re-input chances for a malformed publish after force |
+| limits.extract_timeout_s | 1800 | extractor subprocess timeout |
+| limits.sentence_max_ratio | 0.1 | max sentence length as a ratio of page_chars (oversized sentences are dropped whole) |
 
-## Contracts
+## Pipeline (scan)
 
-`extractors/_contract.json` holds both contracts in template form:
-`session_actions` (every model reply: `read_page` / `read_chatlog` /
-`read_memo` / `write_memo` / `publish` / `help`) and
-`chatlog_summary` (the fold summary side call). `schema.py` checks documents
-against a template — filled template values must match literally, empty values
-are slots that must exist with the matching type — and derives the
-`response_format` JSON schema sent to the backend from the same template.
-Prompt entries split into frontier (the standing frame: contract references,
-protocol labels, tokenized structure) and text (the registered content: role
-persona, payload slots); frontiers reference contracts with `{_contract:<name>}`
-and the rendered protocol is injected at load time.
+1. **register** — first level under the path (hidden entries, `_`-prefixed
+   names, `runs/`, existing `*.publish.json` skipped); each target becomes
+   `t1..tN` in `registry.json` with state `pending`.
+2. **extract** — `extractors/<name>/extractor.py` runs in a child process per
+   target; its `extract(in_path, out_dir)` return value decides normality.
+   Abnormal (exception, timeout, worker death, non-dict return, zero kept
+   files) marks the target `skipped` with the reason; no conversation runs.
+   Every run is logged to `run.json` with `ok`, the returned `result` or the
+   `error` reason, and elapsed time.
+3. **context** — files under the target's `extracted/<tN>/` are recognized by
+   `context_scanner`, packed into pages with a metadata tail page, and
+   archived as `context.json`.
+4. **identify** — one conversation per target. Opening scene:
+   system, context (catalog + first page position), optional `add`, chatlog
+   (tail page), memo (tail page). Every raw message is archived to
+   `messages.json` with its session number; `sessions.json` records session
+   boundaries.
+5. **publish** — the template `publish.json` is filled with identity and
+   warnings, checked against itself, and written as `<target>.publish.json`.
+   Target states: pending / extracted / published / failed / skipped.
 
 ## Conversation engine
 
-The opening scene is `system | context | chatlog | memo`; every model reply
-must be one JSON object matching `session_actions`. `read_page` delivers a
-context page (each page once; a repeat or out-of-range request stalls into
-forced publish), `read_chatlog` delivers a chatlog page (rereadable), `publish`
-ends the session with an identity, `help` re-sends the protocol recap. The memo
-is the model's working note for the target: it persists across sessions and
-folds in `runs/<run_id>/memo.json`, opens as the tail page of every session, is
-read with `read_memo` and replaced whole with `write_memo` (a `memo` string
-field, capped at one page; an invalid write is rejected with a `memo_reject`
-prompt and can simply be sent again). When tokens reach `remind_at`
-the model is asked (in a side call) to summarize the conversation; the digest
-is folded into the chatlog document and a new session opens.
-`force_publish_at` folds without waiting for a summary, filing the raw session
-messages instead. The chatlog document is paged like the context (same
-sentence rules) and browsable with `read_chatlog`. Raw messages are never
-discarded: `messages.json` keeps every message under its session number,
-`sessions.json` records the boundaries.
+The model drives with one JSON action per turn
+(`{_contract:session_actions}`):
 
-Guardrail budgets: every malformed-JSON reply gets a retry prompt; a malformed
-publish gives up at once, unless publish is forced — then it gets
-`ai.publish_retries` re-input chances (default 3) before giving up. Give-up
-paths publish a degraded identity — category `unknown`, confidence 0 — with
-the reason recorded in the document's `warnings`.
+- `read_page` — request a context page (1..N; the metadata page is N+1).
+  Pages already read or out-of-range requests stall into publish.
+- `read_chatlog` — request a chatlog page; chatlog pages stay rereadable.
+- `read_memo` / `write_memo` — read the memo; replace it whole with the
+  `memo` field. Oversized or non-string writes are refused with `memo_reject`.
+- `publish` — final identity. A malformed publish before any force gives up;
+  after force it gets `publish_retries` re-input chances.
+- `help` — protocol recap, any time.
 
-## Publish documents
+Folding: at `remind_at` the engine asks the model (side call,
+`{_contract:chatlog_summary}`) for a summary and folds the session as a
+digest; at `force_publish_at` the session's raw messages are folded without a
+summary (soft boundary — the messages survive in the chatlog document). Each
+fold opens a new session. `max_turns: -1` folds without limit; when the cap
+is reached the watermarks fall back to their prompt-publish /
+force-publish meanings.
 
-`publish.json` is the shape of the result: `identity` (title, category,
-summary, tags, language, confidence) filled by the model, `warnings` filled by
-the program. A filled document is checked against the template before it is
-written as `<target>.publish.json`.
+Prompt entries are `{role, frontier, text}`: frontier is the standing frame
+(contract references, protocol labels, page tokens), text is the registered
+content (role persona, payload slots). Contracts live in
+`extractors/_contract.json` and are injected through `{_contract:<name>}`.
 
-## Extending
+## Publish format
 
-Copy `extractors/default/` to `extractors/<name>/`, keep `extractor.py` with an
-`extract(in_path, out_dir) -> {"files_kept", "warnings"}` function (no project
-imports; the module's own config/password files stay inside its folder), adjust
-its `prompts.json` and `publish.json` as needed, then run
-`scan <path> --extractor <name>`.
+`<target>.publish.json` mirrors the template: identity (title, category,
+summary, tags, language, confidence) plus program-filled warnings. A target
+whose publish fails the template check is marked `failed` and no file is
+written.
 
-## License
+## Default extractor
 
-Apache-2.0
+Accepts only `.zip` / `.7z` archives; folders and plain files are refused
+(and their targets end up `skipped`, no conversation). Members are sampled
+under its own caps (`extractors/default/config.json`): per-file 256 KiB,
+total 4 MiB, 8 files, 30k listing entries. Encrypted archives try the
+password candidates in `extractors/default/password.json`. Quantity policy
+belongs to the extractor, not the root config.

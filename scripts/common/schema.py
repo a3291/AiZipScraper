@@ -2,13 +2,10 @@
 
 A template's filled values are fixed (must match literally); empty values
 ("", [], 0, 0.0) are slots that must exist with the matching type; null slots
-must exist with any value. The same derivation also produces the response_format
+must exist with any value. The same derivation produces the response_format
 JSON schema sent to the backend, so backend enforcement and local checks read
 one template.
 """
-
-CATEGORIES = ["dataset", "media", "software", "documents", "mixed", "unknown"]
-LOW_CONFIDENCE = 0.6
 
 
 def check(obj, template):

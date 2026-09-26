@@ -27,9 +27,7 @@ def looks_binary(head):
 
 def file_to_text(path):
     """Return the decoded text of path, or None when the file is not usable
-    text (unknown extension, empty, binary, undecodable). Quantity policy
-    lives with the extractor, which caps what it writes; everything it
-    produced is read here."""
+    text (unknown extension, empty, binary, undecodable)."""
     p = Path(path)
     if not p.is_file():
         return None

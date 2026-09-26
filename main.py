@@ -1,4 +1,3 @@
-"""AiScraper entry point."""
 import sys
 from pathlib import Path
 

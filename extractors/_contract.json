@@ -1,12 +1,9 @@
 {
   "session_actions": {
-    "enforced_by": "backend response_format + schema.check",
     "template": {"action": "", "page": null, "memo": null, "identity": null},
     "enums": {"action": ["read_page", "read_chatlog", "read_memo", "write_memo", "publish", "help"]}
   },
   "chatlog_summary": {
-    "enforced_by": "schema.check",
-    "template": {"summary": ""},
-    "limits": {"summary": 4000}
+    "template": {"summary": ""}
   }
 }

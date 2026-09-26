@@ -3,8 +3,6 @@ import json
 import time
 import urllib.request
 
-_TIMEOUT_GRACE = 30
-
 
 def endpoint(cfg):
     return str(cfg["base_url"]).rstrip("/")
@@ -58,7 +56,7 @@ def chat(messages, contract, model, cfg):
         method="POST",
     )
     start = time.monotonic()
-    with urllib.request.urlopen(req, timeout=cfg["timeout"] + _TIMEOUT_GRACE) as resp:
+    with urllib.request.urlopen(req, timeout=cfg["timeout"]) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     usage = data.get("usage") or {}
     return {

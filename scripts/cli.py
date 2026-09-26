@@ -1,7 +1,7 @@
 """AiScraper command line: scan / backend.
 
 scan is one pipeline: register targets (non-recursive) under a path, extract
-them with subprocesses, build paged context, run one identify conversation per
+them in child processes, build paged context, run one identify conversation per
 target, then fill the publish template, check it against the template and write
 <target>.publish.json next to the target. The registry is the single source of
 target state.

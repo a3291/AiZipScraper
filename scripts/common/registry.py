@@ -7,7 +7,7 @@ from pathlib import Path
 
 from common.paths import now, read_json, write_json
 
-STATES = ("pending", "extracted", "published", "failed")
+STATES = ("pending", "extracted", "published", "failed", "skipped")
 _LOCK = threading.Lock()
 
 

@@ -2,7 +2,7 @@
   "prompts": {
     "system": {
       "role": "system",
-      "frontier": "{_contract:session_actions} identity keys: title (concise name), category (dataset/media/software/documents/mixed/unknown), summary (two or three sentences), tags (array), language (array of language codes), confidence (0 to 1). When evidence is insufficient use category unknown and lower the confidence. Output exactly one JSON object.",
+      "frontier": "{_contract:session_actions} identity keys: title, category, summary, tags, language, confidence. Output exactly one JSON object.",
       "text": "You are an archive content analyzer."
     },
     "first": {

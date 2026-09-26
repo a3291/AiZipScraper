@@ -1,8 +1,9 @@
 """Packs extracted files into numbered pages with a trailing metadata page.
 
 Page boundaries align to sentence ends; a sentence longer than
-page_chars * sentence_max_ratio is dropped whole; pages never split a sentence.
-File recognition is delegated to context_scanner.
+page_chars * sentence_max_ratio is dropped whole (PR: soft page boundary,
+oversized sentences are not kept); pages never split a sentence. File
+recognition is delegated to context_scanner.
 """
 import os
 from pathlib import Path
@@ -32,11 +33,13 @@ def paginate(text, page_chars, sentence_max_ratio):
     for sent in _split_sentences(text):
         if len(sent) > max_sent:
             continue
-        if cur and cur_chars + len(sent) > page_chars:
+        added = len(sent) + (1 if cur else 0)
+        if cur and cur_chars + added > page_chars:
             pages.append("\n".join(cur))
             cur, cur_chars = [], 0
+            added = len(sent)
         cur.append(sent)
-        cur_chars += len(sent)
+        cur_chars += added
     if cur:
         pages.append("\n".join(cur))
     return pages
@@ -44,8 +47,7 @@ def paginate(text, page_chars, sentence_max_ratio):
 
 def write_chatlog(run_dir, key, fold_text, page_chars, sentence_max_ratio):
     """Append a folded session to runs/<run_id>/chatlog.json, re-page the
-    accumulated document and return its pages. chatlog.json is the persisted
-    chatlog-context; the engine reads pages from what this returns."""
+    accumulated document and return its pages."""
     p = Path(run_dir) / "chatlog.json"
     doc = paths.read_json(p) if p.exists() else {"packages": {}}
     pkg = doc["packages"].setdefault(key, {"sections": [], "pages": []})

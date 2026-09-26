@@ -1,10 +1,11 @@
 """Conversation engine: paged evidence in, identity out.
 
 chatlog is the only mode: remind_at asks the model for a summary and folds the
-history into a digest; force_publish_at folds without a summary; max_turns caps
-folds (-1 unlimited; when the cap is reached the watermarks fall back to their
-prompt-publish / force-publish meanings). Every raw message is archived with
-its session number; a fold opens a new session.
+history into a digest; force_publish_at folds without a summary (the session's
+raw messages are filed instead — the soft boundary keeps the messages);
+max_turns caps folds (-1 unlimited; when the cap is reached the watermarks
+fall back to their prompt-publish / force-publish meanings). Every raw message
+is archived with its session number; a fold opens a new session.
 """
 import json
 import threading
@@ -26,6 +27,7 @@ REQUIRED_PROMPT_KEYS = {
     "chatlog_summarize_reply", "memo", "memo_deliver", "memo_saved",
     "memo_reject",
 }
+
 _MSG_LOCK = threading.Lock()
 
 
@@ -50,8 +52,6 @@ class MessageLog:
     def __init__(self, run_dir, key):
         self.run_dir = Path(run_dir)
         self.key = key
-        self._run_dir = self.run_dir
-        self._key = self.key
         self._entries = self._read("messages.json").get("packages", {}).get(key, [])
         self._sessions = (
             self._read("sessions.json").get("packages", {}).get(key, {"sessions": []})["sessions"]
@@ -59,7 +59,7 @@ class MessageLog:
         self.session = len(self._sessions)
 
     def _read(self, name):
-        p = self._run_dir / name
+        p = self.run_dir / name
         return read_json(p) if p.exists() else {"packages": {}}
 
     def new_session(self):
@@ -74,17 +74,14 @@ class MessageLog:
         self._entries.append(entry)
         self._flush()
 
-    def count(self):
-        return len(self._entries)
-
     def _flush(self):
         with _MSG_LOCK:
             msg = self._read("messages.json")
             ses = self._read("sessions.json")
-            msg["packages"][self._key] = self._entries
-            ses["packages"][self._key] = {"sessions": self._sessions}
-            write_json(self._run_dir / "messages.json", msg)
-            write_json(self._run_dir / "sessions.json", ses)
+            msg["packages"][self.key] = self._entries
+            ses["packages"][self.key] = {"sessions": self._sessions}
+            write_json(self.run_dir / "messages.json", msg)
+            write_json(self.run_dir / "sessions.json", ses)
 
 
 def _estimate_tokens(messages, chunk):
@@ -107,48 +104,6 @@ def _extract_json(text):
         return None
 
 
-def _str_list(value, cap, warns, name):
-    if not isinstance(value, list):
-        if value not in (None, "", [],):
-            warns.append(f"{name} {value!r} is not a list; set empty")
-        return []
-    out = []
-    for item in value[:cap]:
-        s = str(item).strip()
-        if s:
-            out.append(s)
-    return out
-
-
-def _validate_identity(ident):
-    warns = []
-    title = str(ident.get("title", "")).strip()[:300]
-    category = ident.get("category")
-    if category not in schema.CATEGORIES:
-        warns.append(f"category {category!r} not in list; set unknown")
-        category = "unknown"
-    summary = str(ident.get("summary", "")).strip()[:2000]
-    tags = _str_list(ident.get("tags"), 30, warns, "tags")
-    language = _str_list(ident.get("language"), 12, warns, "language")
-    conf = ident.get("confidence")
-    if isinstance(conf, bool) or not isinstance(conf, (int, float)) or not 0.0 <= conf <= 1.0:
-        warns.append(f"confidence {conf!r} invalid; set 0.5")
-        conf = 0.5
-    identity = {
-        "title": title,
-        "category": category,
-        "summary": summary,
-        "tags": tags,
-        "language": language,
-        "confidence": round(float(conf), 3),
-    }
-    if identity["confidence"] < schema.LOW_CONFIDENCE:
-        warns.append(
-            f"low confidence ({identity['confidence']}); needs human review"
-        )
-    return identity, warns
-
-
 def run_session(context_pkg, pb, cfg, model, mlog):
     """Drive one identify conversation. Returns (identity, warnings, stats)."""
     missing = REQUIRED_PROMPT_KEYS - set(pb.prompts)
@@ -159,7 +114,6 @@ def run_session(context_pkg, pb, cfg, model, mlog):
     tail = context_pkg["tail_page"]
     page_total = len(pages) + 1
     rf = pb.response_format("session_actions")
-    summary_limit = pb.limit("chatlog_summary", "summary")
 
     warned = []
     stats = {
@@ -278,12 +232,8 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         if not isinstance(text, str) or not text.strip():
             warned.append("chatlog summary invalid or empty")
             return None
-        text = text.strip()
-        if len(text) > summary_limit:
-            warned.append(f"chatlog summary over limit ({len(text)} > {summary_limit})")
-            return None
         mlog.append("assistant", r["content"], "chatlog_summarize_reply")
-        return text
+        return text.strip()
 
     def bail(reason):
         warned.append(f"gave up: {reason}")
@@ -294,7 +244,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         }
         return identity, warned, stats
 
-    def stall(why):
+    def stall():
         nonlocal forced
         forced = True
         say(pb.get("stall_to_publish"), "stall_to_publish")
@@ -351,10 +301,8 @@ def run_session(context_pkg, pb, cfg, model, mlog):
                     retry_left -= 1
                     continue
                 return bail("publish output malformed")
-            identity, norm_warns = _validate_identity(ident)
-            warned.extend(norm_warns)
             stats["pages_read"] = len(read_pages)
-            return identity, warned, stats
+            return ident, warned, stats
 
         if action == "read_memo":
             say(pb.get(
@@ -386,7 +334,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
                 and 1 <= cpage <= len(chatlog_pages)
             )
             if not ok_c:
-                stall("missing or out-of-range chatlog page")
+                stall()
                 continue
             body = chatlog_pages[cpage - 1]
             say(pb.get(
@@ -401,10 +349,10 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             and 1 <= page <= page_total
         )
         if not ok:
-            stall("missing or out-of-range page")
+            stall()
             continue
         if page in read_pages:
-            stall(f"page {page} was already read")
+            stall()
             continue
         read_pages.add(page)
         body = pages[page - 1]["text"] if page <= len(pages) else tail["text"]
