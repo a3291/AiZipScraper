@@ -6,6 +6,9 @@ AI-driven content scraper for archives and files: register targets, pull text
 through a pluggable extractor, let a local LLM identify each target through a
 paged conversation, and write a `publish.json` next to the target.
 
+Inspired by media library scrapers (like Plex): each package keeps a
+searchable, verifiable profile next to the file.
+
 ## Layout
 
 ```
