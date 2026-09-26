@@ -25,7 +25,7 @@ handing dicts in memory — the runs/ JSON files
 other.
 
 ```
-static contract layer   config.json (project root) · jsons/result_contract.json
+static contract layer   config.json (project root) · extractors/result_contract.json
                         (per-extractor: prompt.json + publish.json in extractors/<name>/)
 
 main.py ──> cli.py
@@ -53,8 +53,7 @@ main.py ──> cli.py
 
 Rings 1–2 run as a worker pool, then rings 3–5 run per target after the pool
 joins, handing dicts in memory; ring 6 is read-only. `extractors/` does not
-import project modules and does not read `jsons/`; extractor directories are
-swapped in and out whole.
+import project modules; extractor directories are swapped in and out whole.
 
 ## Installation
 
@@ -227,9 +226,9 @@ meanings above.
 │   ├── schema.py                  # sidecar contract (category enum, threshold, validation)
 │   └── paths.py                   # project path constants
 ├── extractors/                    # extractor directories (pluggable, self-contained)
+│   ├── result_contract.json       # _result.json contract (reference copy)
 │   └── default/                   # extractor.py + config.json + password.json
 │                                  #   + prompt.json + publish.json
-├── jsons/                         # result_contract.json (reference copy)
 └── runs/                          # per-scan archives (not tracked)
 ```
 

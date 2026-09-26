@@ -20,7 +20,7 @@
 六环加一层静态契约层。以文件为界的交接：目标 → extracted/ + _result.json → 侧车；环 3–5 在 `cli.py` 进程内运行，内存传 dict——runs/ 下的 JSON 文件（context.json、messages.json、checklist.json）是随之写入的归档。`cli.py` 依次调用各环模块，环脚本之间互不 import。
 
 ```
-静态契约层              config.json（项目根）· jsons/result_contract.json
+静态契约层              config.json（项目根）· extractors/result_contract.json
                         （随提取器：extractors/<name>/ 下的 prompt.json + publish.json）
 
 main.py ──> cli.py
@@ -42,7 +42,7 @@ main.py ──> cli.py
                             → run 报告；scan 过程中不打印，结束时报告一次
 ```
 
-环 1–2 以工作池运行，池 join 后环 3–5 逐目标执行、内存传 dict；环 6 只读。`extractors/` 不 import 项目模块、不读 `jsons/`；提取器目录整体插拔。
+环 1–2 以工作池运行，池 join 后环 3–5 逐目标执行、内存传 dict；环 6 只读。`extractors/` 不 import 项目模块；提取器目录整体插拔。
 
 ## 安装
 
@@ -195,9 +195,9 @@ uv run python scripts/run_logger.py <run_id>
 │   ├── schema.py                  # 侧车契约（大类枚举、阈值、校验）
 │   └── paths.py                   # 项目路径常量
 ├── extractors/                    # 提取器目录（可插拔、自包含）
+│   ├── result_contract.json       # _result.json 契约（参考件）
 │   └── default/                   # extractor.py + config.json + password.json
 │                                  #   + prompt.json + publish.json
-├── jsons/                         # result_contract.json（参考件）
 └── runs/                          # 每次 scan 的归档（不入库）
 ```
 
