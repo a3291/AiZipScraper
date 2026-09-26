@@ -16,7 +16,7 @@ PLACEHOLDER_RE = re.compile(r"<([AI]_[A-Z0-9_]+)>")
 
 
 def load_template(path: str | None = None) -> dict:
-    p = Path(path) if path else paths.JSONS / "publish.json"
+    p = Path(path) if path else paths.EXTRACTORS / "default" / "publish.json"
     return json.loads(p.read_text(encoding="utf-8-sig"))
 
 

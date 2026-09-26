@@ -123,7 +123,8 @@ def extract_one(target: Path, run_dir: Path,
 
 
 def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
-                         cl: dict, ex: dict) -> dict:
+                         cl: dict, ex: dict,
+                         extractor_name: str = "default") -> dict:
     """Identify and publish one target: pack → session → validate & write (ex is the extraction result dict)."""
     rec = {"name": target.name, "outcome": "", "detail": ""}
     entry_id = ex["entry_id"]
@@ -202,7 +203,9 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
         },
     }
     try:
-        side, problems = publisher.publish(target, program, identity, warnings)
+        side, problems = publisher.publish(
+            target, program, identity, warnings,
+            template_path=paths.EXTRACTORS / extractor_name / "publish.json")
     except Exception as e:
         pkg["publish"].update(phase=PH_FAIL, detail=f"{type(e).__name__}: {e}")
         rec["outcome"] = "fail-publish"
@@ -230,7 +233,8 @@ def process_one(target: Path, run_dir: Path,
         pkg = cl["packages"].setdefault(str(target), _new_pkg_rec(target))
         pkg["extract"].update(phase=PH_FAIL, detail=err)
         return rec
-    return identify_and_publish(target, run_dir, cfg, prompts, cl, ex)
+    return identify_and_publish(target, run_dir, cfg, prompts, cl, ex,
+                                extractor_name)
 
 
 def _save(cl: dict, run_dir: Path) -> None:
@@ -241,7 +245,12 @@ def _save(cl: dict, run_dir: Path) -> None:
 
 def cmd_scan(args) -> int:
     cfg = load_config(args.config)
-    prompts = load_prompts()
+    ex_dir = paths.EXTRACTORS / args.extractor
+    for name in ("prompt.json", "publish.json"):
+        if not (ex_dir / name).is_file():
+            raise SystemExit(f"extractor '{args.extractor}' is missing "
+                             f"{name} ({ex_dir / name})")
+    prompts = load_prompts(ex_dir / "prompt.json")
     if args.auto_chatlog:
         cfg["chatlog"] = True
     backend.resolve_endpoint(cfg)   # once per run, before the pools
@@ -438,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("path", help="file or directory")
     p.add_argument("--force", action="store_true",
                    help="rescan even if a sidecar already exists")
-    p.add_argument("--config", help="AI config file path (default jsons/scraper.json)")
+    p.add_argument("--config", help="AI config file path (default config.json in the project root)")
     p.add_argument("--extractor", default="default",
                    help="extractor name (directory or file under extractors/, default: default)")
     p.add_argument("--no-recurse", action="store_true",
@@ -450,7 +459,7 @@ def main(argv: list[str] | None = None) -> int:
                         "(remind_at = summary trigger, force_publish_at = forced roll, "
                         "max_turns = roll cap)")
     p.add_argument("--workers", type=int,
-                   help="override concurrency for this run (defaults to scraper.json)")
+                   help="override concurrency for this run (defaults to config.json)")
     p.set_defaults(func=cmd_scan)
 
     p = sub.add_parser("show", help="display sidecars")

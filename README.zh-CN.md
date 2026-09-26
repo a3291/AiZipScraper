@@ -20,7 +20,8 @@
 六环加一层静态契约层。以文件为界的交接：目标 → extracted/ + _result.json → 侧车；环 3–5 在 `cli.py` 进程内运行，内存传 dict——runs/ 下的 JSON 文件（context.json、messages.json、checklist.json）是随之写入的归档。`cli.py` 依次调用各环模块，环脚本之间互不 import。
 
 ```
-静态契约层              jsons/scraper.json · prompt.json · publish.json
+静态契约层              config.json（项目根）· jsons/result_contract.json
+                        （随提取器：extractors/<name>/ 下的 prompt.json + publish.json）
 
 main.py ──> cli.py
   环 1  find_targets        → 目标清单（全部文件；排除 runs/ 与 *.publish.json；
@@ -31,7 +32,8 @@ main.py ──> cli.py
           │                  心跳文件起手写、成功删）
   环 3  context_builder     只读 extracted/（跳过下划线前缀文件）
           │                 → context dict；归档进 runs/<id>/context.json
-  环 4  ai_identify         读环 3 的 context dict + prompt.json + scraper.json
+  环 4  ai_identify         读环 3 的 context dict + 提取器的 prompt.json
+          │                 + config.json
           │   └ backend.py  → runs/<id>/messages.json（逐轮原子追加）
           │                   + identity dict
   环 5  publisher           读程序侧字段 + identity + publish.json 模板
@@ -55,13 +57,13 @@ uv sync
 ## 快速上手
 
 ```bash
-# 推荐的 scan 用法：配置取自 jsons/scraper.json + chatlog 滚页 + 发布后清理，单线程，默认提取器，强制全量重刮
-uv run python main.py scan D:/downloads --config jsons/scraper.json --auto-chatlog --auto-extracted-clean --workers 1 --extractor default --force
+# 推荐的 scan 用法：配置取自 config.json + chatlog 滚页 + 发布后清理，单线程，默认提取器，强制全量重刮
+uv run python main.py scan D:/downloads --config config.json --auto-chatlog --auto-extracted-clean --workers 1 --extractor default --force
 
 # 批量刮削一个目录（已缓存目标自动跳过）
 uv run python main.py scan D:/downloads
 
-# 仅本次覆盖并发数（默认取 scraper.json 的 "concurrency"）
+# 仅本次覆盖并发数（默认取 config.json 的 "concurrency"）
 uv run python main.py scan D:/downloads --workers 8
 
 # 换用另一个提取器（extractors/ 下的目录名；默认 default）
@@ -91,7 +93,7 @@ uv run python scripts/run_logger.py <run_id>
 
 ## 配置
 
-`jsons/scraper.json` 是唯一的配置文件；缺键或类型不符直接报错：
+`config.json`（项目根目录）是唯一的配置文件；缺键或类型不符直接报错：
 
 ```json
 {
@@ -127,7 +129,7 @@ uv run python scripts/run_logger.py <run_id>
 | `limits.max_text_file_bytes` | 超过此大小的文件只登记、不作为文本读取 |
 | `limits.sentence_max_ratio` | 超过 `page_chars × ratio` 的句子整句跳过；分页对齐句子末尾，句子不跨页切断 |
 
-提示词在 `jsons/prompt.json`；侧车模板在 `jsons/publish.json`。临时换配置用 `--config other.json`。
+提示词（`prompt.json`）与侧车模板（`publish.json`）放在提取器自己的目录（`extractors/<name>/`），缺件在启动时即报错。临时换配置用 `--config other.json`。
 
 ## API 交互
 
@@ -181,6 +183,7 @@ uv run python scripts/run_logger.py <run_id>
 
 ```
 ├── main.py                        # 统一入口（转交 scripts/cli.py）
+├── config.json                    # 运行配置（AI 后端、并发、limits）
 ├── scripts/                       # 流水线各环（互不 import）
 │   ├── cli.py                     # scan / show / check / export
 │   ├── run_extractor.py           # 提取器运行器（子进程入口，契约校验）
@@ -192,8 +195,9 @@ uv run python scripts/run_logger.py <run_id>
 │   ├── schema.py                  # 侧车契约（大类枚举、阈值、校验）
 │   └── paths.py                   # 项目路径常量
 ├── extractors/                    # 提取器目录（可插拔、自包含）
-│   └── default/                   # extractor.py + config.json + 自持 password.json
-├── jsons/                         # 静态契约层
+│   └── default/                   # extractor.py + config.json + password.json
+│                                  #   + prompt.json + publish.json
+├── jsons/                         # result_contract.json（参考件）
 └── runs/                          # 每次 scan 的归档（不入库）
 ```
 

@@ -32,7 +32,8 @@ import schema
 
 CATEGORIES = schema.CATEGORIES
 LOW_CONFIDENCE = schema.LOW_CONFIDENCE
-JSONS = paths.JSONS
+CONFIG = paths.CONFIG
+EXTRACTORS = paths.EXTRACTORS
 
 REQUIRED_AI_KEYS = ["base_url", "model", "api_key", "temperature", "timeout",
                     "page_chars", "remind_at", "force_publish_at", "max_turns"]
@@ -46,8 +47,8 @@ SUMMARY_MAX_CHARS = 4000   # a longer summary counts as invalid → forced roll
 
 
 def load_config(path: str | None = None) -> dict:
-    """Read jsons/scraper.json; missing or mistyped keys raise."""
-    p = Path(path) if path else JSONS / "scraper.json"
+    """Read config.json (project root); missing or mistyped keys raise."""
+    p = Path(path) if path else CONFIG
     try:
         raw = json.loads(p.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as e:
@@ -56,24 +57,24 @@ def load_config(path: str | None = None) -> dict:
     ai = raw.get("ai") or {}
     missing = [k for k in REQUIRED_AI_KEYS if k not in ai]
     if missing:
-        raise ValueError(f"scraper.json missing ai keys: {missing} (file {p})")
+        raise ValueError(f"config.json: {missing} (file {p})")
 
     conc = raw.get("concurrency")
     if not isinstance(conc, int) or conc < 1:
-        raise ValueError(f"scraper.json concurrency must be a positive integer (got: {conc!r})")
+        raise ValueError(f"config.json concurrency must be a positive integer (got: {conc!r})")
 
     limits = raw.get("limits")
     if not isinstance(limits, dict):
-        raise ValueError(f"scraper.json limits must be an object (got: {limits!r})")
+        raise ValueError(f"config.json limits must be an object (got: {limits!r})")
     ets = limits.get("extract_timeout_s")
     if not isinstance(ets, int) or ets < 1:
-        raise ValueError("scraper.json limits.extract_timeout_s must be a positive integer")
+        raise ValueError("config.json limits.extract_timeout_s must be a positive integer")
     mtb = limits.get("max_text_file_bytes")
     if not isinstance(mtb, int) or mtb < 1:
-        raise ValueError("scraper.json limits.max_text_file_bytes must be a positive integer")
+        raise ValueError("config.json limits.max_text_file_bytes must be a positive integer")
     ratio = limits.get("sentence_max_ratio")
     if not isinstance(ratio, (int, float)) or not 0 < ratio <= 1:
-        raise ValueError("scraper.json limits.sentence_max_ratio must be in (0, 1]")
+        raise ValueError("config.json limits.sentence_max_ratio must be in (0, 1]")
 
     cfg = dict(ai)
     cfg["concurrency"] = conc
@@ -82,12 +83,15 @@ def load_config(path: str | None = None) -> dict:
 
 
 def load_prompts(path: str | None = None) -> dict:
-    """Read jsons/prompt.json (prompt registry + action contract).
+    """Read extractors/<name>/prompt.json (prompt registry + action contract).
 
     The publish action's category enum must match schema.CATEGORIES.
     """
-    p = Path(path) if path else JSONS / "prompt.json"
-    data = json.loads(p.read_text(encoding="utf-8-sig"))
+    p = Path(path) if path else EXTRACTORS / "default" / "prompt.json"
+    try:
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as e:
+        raise ValueError(f"prompt file unreadable: {p} ({e})") from e
     contract = data["contract"]
     try:
         enum = contract["schema"]["properties"]["identity"]["anyOf"][1] \

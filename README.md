@@ -25,7 +25,8 @@ handing dicts in memory — the runs/ JSON files
 other.
 
 ```
-static contract layer   jsons/scraper.json · prompt.json · publish.json
+static contract layer   config.json (project root) · jsons/result_contract.json
+                        (per-extractor: prompt.json + publish.json in extractors/<name>/)
 
 main.py ──> cli.py
   ring 1  find_targets      → target list (every file; runs/ and *.publish.json
@@ -38,7 +39,8 @@ main.py ──> cli.py
           │                  removed on success)
   ring 3  context_builder   reads extracted/ only (underscore-prefixed files skipped)
           │                 → context dict; archived into runs/<id>/context.json
-  ring 4  ai_identify       reads the ring-3 context dict + prompt.json + scraper.json
+  ring 4  ai_identify       reads the ring-3 context dict + the extractor's
+          │                 prompt.json + config.json
           │   └ backend.py  → runs/<id>/messages.json (appended atomically per turn)
           │                   + identity dict
   ring 5  publisher         reads program fields + identity + publish.json template
@@ -67,13 +69,13 @@ uv sync
 ## Quick start
 
 ```bash
-# Recommended scan invocation: config from jsons/scraper.json + chatlog roll + post-publish cleanup, serial workers, default extractor, full re-scrape
-uv run python main.py scan D:/downloads --config jsons/scraper.json --auto-chatlog --auto-extracted-clean --workers 1 --extractor default --force
+# Recommended scan invocation: config from config.json + chatlog roll + post-publish cleanup, serial workers, default extractor, full re-scrape
+uv run python main.py scan D:/downloads --config config.json --auto-chatlog --auto-extracted-clean --workers 1 --extractor default --force
 
 # Batch-scrape a directory (cached targets are skipped automatically)
 uv run python main.py scan D:/downloads
 
-# Override concurrency for this run only (default: scraper.json "concurrency")
+# Override concurrency for this run only (default: config.json "concurrency")
 uv run python main.py scan D:/downloads --workers 8
 
 # Use another extractor (a directory under extractors/; default: default)
@@ -103,7 +105,7 @@ uv run python scripts/run_logger.py <run_id>
 
 ## Configuration
 
-`jsons/scraper.json` is the only config file; missing or mistyped keys raise:
+`config.json` in the project root is the only config file; missing or mistyped keys raise:
 
 ```json
 {
@@ -139,7 +141,7 @@ uv run python scripts/run_logger.py <run_id>
 | `limits.max_text_file_bytes` | files above this size are registered but not read as text |
 | `limits.sentence_max_ratio` | sentences longer than `page_chars × ratio` are skipped whole; pages break at sentence ends, a sentence is not split across pages |
 
-Prompts live in `jsons/prompt.json`; the sidecar template in `jsons/publish.json`. Swap config ad hoc with `--config other.json`.
+Prompts (`prompt.json`) and the sidecar template (`publish.json`) live in the extractor's own directory (`extractors/<name>/`); a missing file fails the run at startup. Swap config ad hoc with `--config other.json`.
 
 ## API interaction
 
@@ -213,6 +215,7 @@ meanings above.
 
 ```
 ├── main.py                        # unified entry point (delegates to scripts/cli.py)
+├── config.json                    # run config (AI backend, concurrency, limits)
 ├── scripts/                       # pipeline stages (do not import each other)
 │   ├── cli.py                     # scan / show / check / export
 │   ├── run_extractor.py           # extractor runner (subprocess entry, contract validation)
@@ -224,8 +227,9 @@ meanings above.
 │   ├── schema.py                  # sidecar contract (category enum, threshold, validation)
 │   └── paths.py                   # project path constants
 ├── extractors/                    # extractor directories (pluggable, self-contained)
-│   └── default/                   # extractor.py + config.json + self-held password.json
-├── jsons/                         # static contract layer
+│   └── default/                   # extractor.py + config.json + password.json
+│                                  #   + prompt.json + publish.json
+├── jsons/                         # result_contract.json (reference copy)
 └── runs/                          # per-scan archives (not tracked)
 ```
 
