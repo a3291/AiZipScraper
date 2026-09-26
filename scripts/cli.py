@@ -3,8 +3,9 @@
 scan is one pipeline: register targets (non-recursive) under a path, extract
 them in child processes, build paged context, run one identify conversation per
 target, then fill the publish template, check it against the template and write
-<target>.publish.json next to the target. The registry is the single source of
-target state.
+<target>.publish.json next to the target; a copy of each published document is
+kept in runs/<run_id>/publish.json. The registry is the single source of target
+state.
 """
 import argparse
 import copy
@@ -47,10 +48,10 @@ def _publish(pb, target, identity, warnings):
     doc["warnings"] = [str(w) for w in warnings]
     problems = schema.check(doc, tmpl)
     if problems:
-        return None, problems
+        return None, doc, problems
     side = Path(str(target) + ".publish.json")
     paths.write_json(side, doc)
-    return side, []
+    return side, doc, []
 
 
 def _archive_pkg(run_dir, filename, key, pkg):
@@ -119,11 +120,12 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
     identity, warns, stats = ai_identify.run_session(pkg, pb, cfg, model, mlog)
     extractor_warns = result.get("warnings", []) if isinstance(result, dict) else []
     merged = [str(w) for w in extractor_warns] + [str(w) for w in warns]
-    side, problems = _publish(pb, target, identity, merged)
+    side, doc, problems = _publish(pb, target, identity, merged)
     if problems:
         registry.update(run_dir, target, state="failed", error="; ".join(problems))
         print(f"  [publish] {entry['key']} FAILED template check: {'; '.join(problems)}")
         return
+    _archive_pkg(run_dir, "publish.json", entry["key"], doc)
     registry.update(run_dir, target, state="published")
     title = identity.get("title") or "(no title)"
     print(

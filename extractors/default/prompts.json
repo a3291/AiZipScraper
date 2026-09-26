@@ -7,13 +7,13 @@
     },
     "first": {
       "role": "user",
-      "frontier": "Evidence material is laid out page by page; content pages are 1..N and the metadata page is the last page. Request pages with read_page.",
-      "text": "{catalog}\n\n{tail}"
+      "frontier": "Evidence material is laid out page by page; page 1 is the catalog, the last page is the extracted-file metadata. Request any page with read_page.",
+      "text": "{head}"
     },
     "chatlog": {
       "role": "user",
-      "frontier": "Conversation history is folded into chatlog pages; request them with read_chatlog.\n===== chatlog round {roll_no} | context pages read: {pages_read} of {page_total} =====",
-      "text": "{chatlog_catalog}"
+      "frontier": "Conversation history is folded into chatlog pages ({chatlog_total} pages so far); request them with read_chatlog. The latest page is below.\n===== chatlog round {roll_no} | context pages read: {pages_read} of {page_total} =====",
+      "text": "{chatlog_tail}"
     },
     "chatlog_deliver": {
       "role": "user",

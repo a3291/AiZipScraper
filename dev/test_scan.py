@@ -127,6 +127,16 @@ def test_direct_publish():
     side = read_sidecar(targets / "pack.zip")
     ok(list(side["identity"].keys()) == list(IDENTITY.keys()),
         "e2e: identity key order from template")
+    run_dir = next(runs_dir.iterdir())
+    pub = json.loads((run_dir / "publish.json").read_text("utf-8"))
+    ok(pub["packages"]["t1"]["identity"] == side["identity"],
+        "e2e: publish copy in run dir")
+    pkg = ctx["packages"]["t1"]
+    ok(pkg["pages"][0]["text"].startswith("Catalog"), "e2e: catalog is page 1")
+    ok("text files packed" in pkg["pages"][-1]["text"],
+        "e2e: metadata is the last page")
+    ok(any(m.get("prompt_key") == "chatlog" and "no history yet" in m["text"]
+           for m in msgs["packages"]["t1"]), "e2e: chatlog opens without history")
     cleanup(runs_dir, targets)
 
 

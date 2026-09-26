@@ -111,8 +111,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         raise ValueError(f"prompts.json missing keys: {sorted(missing)}")
     ai = cfg["ai"]
     pages = context_pkg["pages"]
-    tail = context_pkg["tail_page"]
-    page_total = len(pages) + 1
+    page_total = len(pages)
     rf = pb.response_format("session_actions")
 
     warned = []
@@ -150,20 +149,18 @@ def run_session(context_pkg, pb, cfg, model, mlog):
     retry_left = ai["publish_retries"]
 
     system = pb.get("system")
-    first = pb.get("first", catalog=context_pkg["catalog"], tail=tail["text"])
+    first = pb.get("first", head=pages[0]["text"])
     add = pb.get("add") if pb.has("add") else None
 
     def chatlog_msg():
         read = ", ".join(str(n) for n in sorted(read_pages)) or "none"
         if chatlog_pages:
-            cat = "chatlog catalog: " + ", ".join(
-                f"p{i + 1}={len(t)} chars" for i, t in enumerate(chatlog_pages)
-            )
+            tail_text, total = chatlog_pages[-1], len(chatlog_pages)
         else:
-            cat = "chatlog catalog: no history yet"
+            tail_text, total = "(no history yet)", 0
         return pb.get(
             "chatlog", roll_no=rolls, pages_read=read, page_total=page_total,
-            chatlog_catalog=cat,
+            chatlog_total=total, chatlog_tail=tail_text,
         )
 
     def rebuild():
@@ -228,7 +225,14 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         stats["tokens_out"] += r["tokens_out"]
         mlog.append(m["role"], m["content"], "chatlog_summarize")
         obj = _extract_json(r["content"])
-        text = obj.get("summary") if isinstance(obj, dict) else None
+        problems = schema.check(
+            obj if isinstance(obj, dict) else {},
+            pb.contract("chatlog_summary")["template"],
+        )
+        if problems:
+            warned.append("chatlog summary failed contract: " + "; ".join(problems))
+            return None
+        text = obj.get("summary")
         if not isinstance(text, str) or not text.strip():
             warned.append("chatlog summary invalid or empty")
             return None
@@ -355,6 +359,6 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             stall()
             continue
         read_pages.add(page)
-        body = pages[page - 1]["text"] if page <= len(pages) else tail["text"]
+        body = pages[page - 1]["text"]
         say(pb.get("page_deliver", page=page, page_total=page_total, page_text=body),
             "page_deliver")

@@ -23,7 +23,7 @@ scripts/
   extractor/                  extraction subprocess domain
     run_extractor.py          worker: loads <name>/extractor.py, returns extract() result
     context_scanner.py        file -> text recognition
-    context_builder.py        paged packing (sentence-aligned pages, metadata tail page)
+    context_builder.py        paged packing (catalog head page, sentence-aligned pages, metadata tail page)
 extractors/
   _contract.json              session_actions + chatlog_summary contracts
   default/
@@ -40,6 +40,7 @@ runs/<run_id>/
   memo.json                   model working notes per target
   sessions.json               session boundaries per target
   messages.json               every raw message with its session number
+  publish.json                copy of each published document
 ```
 
 ## Install
@@ -90,24 +91,25 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
    Every run is logged to `run.json` with `ok`, the returned `result` or the
    `error` reason, and elapsed time.
 3. **context** — files under the target's `extracted/<tN>/` are recognized by
-   `context_scanner`, packed into pages with a metadata tail page, and
-   archived as `context.json`.
+   `context_scanner` and packed into pages: a catalog head page, content
+   pages, and a metadata tail page; archived as `context.json`.
 4. **identify** — one conversation per target. Opening scene:
-   system, context (catalog + first page position), optional `add`, chatlog
-   (tail page), memo (tail page). Every raw message is archived to
-   `messages.json` with its session number; `sessions.json` records session
-   boundaries.
+   system, context (head page: the catalog), optional `add`, chatlog (tail
+   page), memo. Every raw message is archived to `messages.json` with its
+   session number; `sessions.json` records session boundaries.
 5. **publish** — the template `publish.json` is filled with identity and
-   warnings, checked against itself, and written as `<target>.publish.json`.
-   Target states: pending / extracted / published / failed / skipped.
+   warnings, checked against itself, and written as `<target>.publish.json`;
+   a copy goes to `runs/<run_id>/publish.json`. Target states: pending /
+   extracted / published / failed / skipped.
 
 ## Conversation engine
 
 The model drives with one JSON action per turn
 (`{_contract:session_actions}`):
 
-- `read_page` — request a context page (1..N; the metadata page is N+1).
-  Pages already read or out-of-range requests stall into publish.
+- `read_page` — request a context page (page 1 is the catalog; the metadata
+  page is the last). Pages already read or out-of-range requests stall into
+  publish.
 - `read_chatlog` — request a chatlog page; chatlog pages stay rereadable.
 - `read_memo` / `write_memo` — read the memo; replace it whole with the
   `memo` field. Oversized or non-string writes are refused with `memo_reject`.
@@ -116,8 +118,9 @@ The model drives with one JSON action per turn
 - `help` — protocol recap, any time.
 
 Folding: at `remind_at` the engine asks the model (side call,
-`{_contract:chatlog_summary}`) for a summary and folds the session as a
-digest; at `force_publish_at` the session's raw messages are folded without a
+`{_contract:chatlog_summary}`) for a summary, checks it against the
+`chatlog_summary` contract, and folds the session as a digest; at
+`force_publish_at` the session's raw messages are folded without a
 summary (soft boundary — the messages survive in the chatlog document). Each
 fold opens a new session. `max_turns: -1` folds without limit; when the cap
 is reached the watermarks fall back to their prompt-publish /

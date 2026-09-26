@@ -55,8 +55,10 @@ def test_load_and_inject():
     ok('{"action": "read_page"' in pb.get("system")["content"], "inject: variants listed")
     sys_msg = pb.get("system")
     ok(sys_msg["role"] == "system", "get: role kept")
-    first = pb.get("first", catalog="CAT", tail="TAIL")
-    ok(first["content"] == "CAT\n\nTAIL" or "CAT" in first["content"], "get: tokens replaced")
+    first = pb.get("first", head="CAT")
+    ok("CAT" in first["content"], "get: tokens replaced")
+    cl = pb.get("chatlog", chatlog_total=0, chatlog_tail="(no history yet)")
+    ok("(no history yet)" in cl["content"], "get: chatlog tail token replaced")
     page = pb.get("page_deliver", page=2, page_total=5, page_text="BODY")
     ok(page["content"].startswith("Page 2 of 5:"), "get: frontier first")
     ok("BODY" in page["content"], "get: payload present")
@@ -100,6 +102,6 @@ if __name__ == "__main__":
     test_load_and_inject()
     test_publish_template()
     test_paginate()
-    total = 17
+    total = 18
     print(f"test_contract: {total - len(FAILS)} pass, {len(FAILS)} fail")
     sys.exit(1 if FAILS else 0)

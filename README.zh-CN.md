@@ -21,7 +21,7 @@ scripts/
   extractor/                  提取子进程域
     run_extractor.py          工人：加载 <名>/extractor.py，回传 extract() 返回值
     context_scanner.py        文件 → 文本识别
-    context_builder.py        分页打包（句对齐分页、元数据尾页）
+    context_builder.py        分页打包（目录首页、句对齐内容页、元数据尾页）
 extractors/
   _contract.json              session_actions + chatlog_summary 两份契约
   default/
@@ -38,6 +38,7 @@ runs/<run_id>/
   memo.json                   每目标的模型工作笔记
   sessions.json               每目标的 session 边界
   messages.json               逐条原始消息，带 session 号
+  publish.json                每份已发布文档的副本
 ```
 
 ## 安装
@@ -86,20 +87,20 @@ python main.py scan D:\downloads --workers 4
    不进会话。每次运行记入 `run.json`：`ok`、返回的 `result` 或 `error`
    原因、耗时。
 3. **上下文** — 目标 `extracted/<tN>/` 下的文件经 `context_scanner` 识别，
-   打成分页并附元数据尾页，归档为 `context.json`。
-4. **识别** — 每目标一场会话。开卷场景：system、context（目录+首页位）、
-   可选 `add`、chatlog（尾页）、memo（尾页）。每条原始消息带 session 号
+   打成分页：目录首页、内容页、元数据尾页，归档为 `context.json`。
+4. **识别** — 每目标一场会话。开卷场景：system、context（首页：目录）、
+   可选 `add`、chatlog（尾页）、memo。每条原始消息带 session 号
    归档进 `messages.json`；`sessions.json` 记录 session 边界。
 5. **发布** — 用 identity 与 warnings 填模板 `publish.json`，自检通过后
-   写为 `<目标名>.publish.json`。目标状态：pending / extracted /
-   published / failed / skipped。
+   写为 `<目标名>.publish.json`，副本存入 `runs/<run_id>/publish.json`。
+   目标状态：pending / extracted / published / failed / skipped。
 
 ## 会话引擎
 
 模型每轮用一个 JSON action 驱动（`{_contract:session_actions}`）：
 
-- `read_page` — 请求上下文页（1..N；元数据页是 N+1）。已读页或越界请求
-  停滞进入发布。
+- `read_page` — 请求上下文页（第 1 页是目录；元数据页是最后一页）。
+  已读页或越界请求停滞进入发布。
 - `read_chatlog` — 请求 chatlog 页；chatlog 页可重复读。
 - `read_memo` / `write_memo` — 读笔记；用 `memo` 字段整文覆盖。非字符串
   或超长写入以 `memo_reject` 拒绝。
@@ -108,7 +109,8 @@ python main.py scan D:\downloads --workers 4
 - `help` — 协议复述，随时可调。
 
 折页：到 `remind_at` 引擎向模型侧呼叫（`{_contract:chatlog_summary}`）
-要总结，以 digest 折页；到 `force_publish_at` 不做总结，把本 session
+要总结，过 `chatlog_summary` 契约检查后以 digest 折页；到
+`force_publish_at` 不做总结，把本 session
 原始消息折入（软边界——消息在 chatlog 文档里保留）。每次折页开新
 session。`max_turns: -1` 不限次折页；到顶后水位线回落为提醒发布 /
 强制发布的原意。

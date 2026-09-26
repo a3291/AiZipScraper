@@ -3,7 +3,7 @@
 Prompt entries are {role, frontier, text}: frontier is the standing frame —
 contract references, protocol labels, tokenized structure ("Page {page} of
 {page_total}:"); text is the registered content — role persona, payload slots
-({page_text}, {catalog}). Sending joins the non-empty parts with a blank line,
+({page_text}, {head}). Sending joins the non-empty parts with a blank line,
 frontier first. {_contract:<name>} inside either part is replaced at load time
 with the contract rendered from extractors/_contract.json. Runtime tokens are
 replaced per send via get().

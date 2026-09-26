@@ -1,9 +1,9 @@
-"""Packs extracted files into numbered pages with a trailing metadata page.
+"""Packs extracted files into numbered pages: a catalog head page,
+sentence-aligned content pages, and a trailing metadata page.
 
 Page boundaries align to sentence ends; a sentence longer than
-page_chars * sentence_max_ratio is dropped whole (PR: soft page boundary,
-oversized sentences are not kept); pages never split a sentence. File
-recognition is delegated to context_scanner.
+page_chars * sentence_max_ratio is dropped whole; pages never split a
+sentence. File recognition is delegated to context_scanner.
 """
 import os
 from pathlib import Path
@@ -59,7 +59,8 @@ def write_chatlog(run_dir, key, fold_text, page_chars, sentence_max_ratio):
 
 def build(out_dir, page_chars, sentence_max_ratio):
     """Walk out_dir (skipping _-prefixed names), collect text via
-    context_scanner, and return {page_chars, pages, tail_page, catalog, stats}."""
+    context_scanner, and return {page_chars, pages, stats}; page 1 is the
+    catalog, the last page is the extracted-file metadata."""
     out_dir = Path(out_dir)
     files = []
     skipped = []
@@ -80,7 +81,7 @@ def build(out_dir, page_chars, sentence_max_ratio):
             chunks.append(f"## {rel}\n{text.strip()}")
 
     corpus = "\n\n".join(chunks)
-    pages = paginate(corpus, page_chars, sentence_max_ratio)
+    content = paginate(corpus, page_chars, sentence_max_ratio)
 
     ext_stats = {}
     for rel, _size, _chars in files:
@@ -101,13 +102,18 @@ def build(out_dir, page_chars, sentence_max_ratio):
         tail_lines.extend(f"- {rel} ({size} bytes, not usable as text)" for rel, size in skipped)
     tail = "\n".join(tail_lines)
 
-    catalog = (
-        "Catalog: " + ", ".join(f"p{i + 1}={len(t)} chars" for i, t in enumerate(pages))
-        if pages
-        else "Catalog: no content pages (nothing usable was extracted)."
+    total = len(content) + 2
+    listing = ", ".join(f"p{i + 2}={len(t)} chars" for i, t in enumerate(content))
+    catalog_text = (
+        f"Catalog (this page is p1 of {total}): "
+        + (listing if content else "no content pages (nothing usable was extracted)")
+        + f"; p{total}=metadata page (extracted file list and stats)."
     )
-    pages_out = [{"no": i + 1, "chars": len(t), "text": t} for i, t in enumerate(pages)]
-    tail_page = {"no": len(pages_out) + 1, "chars": len(tail), "text": tail}
+    pages_out = [{"no": 1, "chars": len(catalog_text), "text": catalog_text}]
+    pages_out += [
+        {"no": i + 2, "chars": len(t), "text": t} for i, t in enumerate(content)
+    ]
+    pages_out.append({"no": total, "chars": len(tail), "text": tail})
     stats = {
         "entries": len(files) + len(skipped),
         "text_files": len(files),
@@ -117,7 +123,5 @@ def build(out_dir, page_chars, sentence_max_ratio):
     return {
         "page_chars": page_chars,
         "pages": pages_out,
-        "tail_page": tail_page,
-        "catalog": catalog,
         "stats": stats,
     }
