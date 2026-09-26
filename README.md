@@ -20,13 +20,12 @@ Inspired by media library scrapers (like Plex): each package keeps a searchable,
 Six rings plus a static contract layer. File-boundary handovers: targets →
 extracted/ + _result.json → sidecar. Rings 3–5 run in-process under `cli.py`,
 handing dicts in memory — the runs/ JSON files
-(context.json, messages.json, checklist.json) are archives written alongside,
-so ring 6 can replay any run standalone. `cli.py` is the orchestrator and the
-only file importing across rings — ring scripts do not import each other.
+(context.json, messages.json, checklist.json) are archives written alongside.
+`cli.py` invokes the ring modules in order; ring scripts do not import each
+other.
 
 ```
 static contract layer   jsons/scraper.json · prompt.json · publish.json
-                        (human-edited; read by cli / ai_identify / publisher)
 
 main.py ──> cli.py
   ring 1  find_targets      → target list (every file; runs/ and *.publish.json
@@ -37,24 +36,23 @@ main.py ──> cli.py
           │                 (extractor reads its own config.json and
           │                  password.json; heartbeat file written at start,
           │                  removed on success)
-  ring 3  context_builder   eats extracted/ only (underscore-prefixed files skipped)
+  ring 3  context_builder   reads extracted/ only (underscore-prefixed files skipped)
           │                 → context dict; archived into runs/<id>/context.json
-  ring 4  ai_identify       eats the ring-3 context dict + prompt.json + scraper.json
+  ring 4  ai_identify       reads the ring-3 context dict + prompt.json + scraper.json
           │   └ backend.py  → runs/<id>/messages.json (appended atomically per turn)
           │                   + identity dict
-  ring 5  publisher         eats program fields + identity + publish.json template
+  ring 5  publisher         reads program fields + identity + publish.json template
           │                 → <name>.publish.json sidecar (validation failure
           │                   writes nothing)
-  ring 6  run_logger        eats runs/<id>/{checklist,context,messages}.json + sidecars
+  ring 6  run_logger        reads runs/<id>/{checklist,context,messages}.json + sidecars
                             → run report; no printing during the scan, one report
-                              at the end; callable standalone for any run_id
+                              at the end
 ```
 
 Rings 1–2 run as a worker pool, then rings 3–5 run per target after the pool
-joins, handing dicts in memory (the runs/ files are archives for ring 6 and
-standalone replay); ring 6 is read-only. `extractors/` does not import project
-modules and does not read `jsons/`; extractor directories are swapped in and
-out whole.
+joins, handing dicts in memory; ring 6 is read-only. `extractors/` does not
+import project modules and does not read `jsons/`; extractor directories are
+swapped in and out whole.
 
 ## Installation
 
@@ -214,7 +212,7 @@ meanings above.
 ```
 ├── main.py                        # unified entry point (delegates to scripts/cli.py)
 ├── scripts/                       # pipeline stages (do not import each other)
-│   ├── cli.py                     # orchestrator: scan / show / check / export
+│   ├── cli.py                     # scan / show / check / export
 │   ├── run_extractor.py           # extractor runner (subprocess entry, contract validation)
 │   ├── context_builder.py         # extracted/ → paged context
 │   ├── ai_identify.py             # recognition session engine
@@ -225,7 +223,7 @@ meanings above.
 │   └── paths.py                   # project path constants
 ├── extractors/                    # extractor directories (pluggable, self-contained)
 │   └── default/                   # extractor.py + config.json + self-held password.json
-├── jsons/                         # static contract layer (human-edited, program-read)
+├── jsons/                         # static contract layer
 └── runs/                          # per-scan archives (not tracked)
 ```
 

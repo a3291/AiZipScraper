@@ -17,11 +17,10 @@
 
 ## 生产消费链
 
-六环加一层静态契约层。以文件为界的交接：目标 → extracted/ + _result.json → 侧车；环 3–5 在 `cli.py` 进程内运行，内存传 dict——runs/ 下的 JSON 文件（context.json、messages.json、checklist.json）是随之写入的归档，环 6 因此可以独立回放任意 run。`cli.py` 是编排者，也是唯一跨环 import 的文件——环脚本之间互不 import。
+六环加一层静态契约层。以文件为界的交接：目标 → extracted/ + _result.json → 侧车；环 3–5 在 `cli.py` 进程内运行，内存传 dict——runs/ 下的 JSON 文件（context.json、messages.json、checklist.json）是随之写入的归档。`cli.py` 依次调用各环模块，环脚本之间互不 import。
 
 ```
 静态契约层              jsons/scraper.json · prompt.json · publish.json
-                        （人编辑；cli / ai_identify / publisher 读）
 
 main.py ──> cli.py
   环 1  find_targets        → 目标清单（全部文件；排除 runs/ 与 *.publish.json；
@@ -30,19 +29,18 @@ main.py ──> cli.py
           │                 → runs/<id>/extracted/<entry_id>/ + _result.json
           │                 （提取器读自己的 config.json 与 password.json；
           │                  心跳文件起手写、成功删）
-  环 3  context_builder     只吃 extracted/（跳过下划线前缀文件）
+  环 3  context_builder     只读 extracted/（跳过下划线前缀文件）
           │                 → context dict；归档进 runs/<id>/context.json
-  环 4  ai_identify         吃环 3 的 context dict + prompt.json + scraper.json
+  环 4  ai_identify         读环 3 的 context dict + prompt.json + scraper.json
           │   └ backend.py  → runs/<id>/messages.json（逐轮原子追加）
           │                   + identity dict
-  环 5  publisher           吃程序侧字段 + identity + publish.json 模板
+  环 5  publisher           读程序侧字段 + identity + publish.json 模板
           │                 → <名称>.publish.json 侧车（校验不过不写盘）
-  环 6  run_logger          吃 runs/<id>/{checklist,context,messages}.json + 侧车
-                            → run 报告；scan 过程中不打印，结束时报告一次；
-                              可独立调用回放任意 run_id
+  环 6  run_logger          读 runs/<id>/{checklist,context,messages}.json + 侧车
+                            → run 报告；scan 过程中不打印，结束时报告一次
 ```
 
-环 1–2 以工作池运行，池 join 后环 3–5 逐目标执行、内存传 dict（runs/ 下的文件是给环 6 与独立回放用的归档）；环 6 只读。`extractors/` 不 import 项目模块、不读 `jsons/`；提取器目录整体插拔。
+环 1–2 以工作池运行，池 join 后环 3–5 逐目标执行、内存传 dict；环 6 只读。`extractors/` 不 import 项目模块、不读 `jsons/`；提取器目录整体插拔。
 
 ## 安装
 
@@ -184,7 +182,7 @@ uv run python scripts/run_logger.py <run_id>
 ```
 ├── main.py                        # 统一入口（转交 scripts/cli.py）
 ├── scripts/                       # 流水线各环（互不 import）
-│   ├── cli.py                     # 编排者：scan / show / check / export
+│   ├── cli.py                     # scan / show / check / export
 │   ├── run_extractor.py           # 提取器运行器（子进程入口，契约校验）
 │   ├── context_builder.py         # extracted/ → 分页上下文
 │   ├── ai_identify.py             # 识别会话引擎
@@ -195,7 +193,7 @@ uv run python scripts/run_logger.py <run_id>
 │   └── paths.py                   # 项目路径常量
 ├── extractors/                    # 提取器目录（可插拔、自包含）
 │   └── default/                   # extractor.py + config.json + 自持 password.json
-├── jsons/                         # 静态契约层（人编辑、程序读）
+├── jsons/                         # 静态契约层
 └── runs/                          # 每次 scan 的归档（不入库）
 ```
 

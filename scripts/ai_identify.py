@@ -4,7 +4,7 @@ run_session(context_pkg, prompts, cfg, mlog, hint_exts)
   → (identity, confidence, warnings, stats); appends to messages.json per turn.
   context_pkg shape (from context_builder.build): pages [{no, chars, text}],
   tail_page {no, text}, stats.page_count.
-  identity always carries "confidence"; a degraded identity carries
+  identity carries "confidence"; a degraded identity carries
   schema.FALLBACK_KEY and stats["published"] = False.
 Guardrails: max_turns cap (negative = unlimited), one invalid-JSON tolerance,
 page stall → forced publish, 2 more page turns after force → degrade.
@@ -12,7 +12,7 @@ Chatlog mode (cfg["chatlog"], from --auto-chatlog): remind_at = summary
 trigger (side-call digest); force_publish_at = forced roll without a digest
 (soft boundary: raw messages stay archived in messages.json). A roll re-issues
 the opening prompt with the digests and read-progress merged into the
-tail-page section — a context channel parallel to the page context, never a
+tail-page section — a context channel parallel to the page context, not a
 dialogue message. max_turns = roll cap (-1 unlimited; once reached the
 watermarks fall back to their original meanings).
 """

@@ -1,7 +1,7 @@
 """extractors/default — default extractor (pluggable; one self-contained directory per extractor).
 
 CLI contract: an incoming path (single file) + an outgoing directory;
-concurrency-safe (each target gets its own out dir).
+each target gets its own out dir.
 Self-contained: depends only on third-party packages in the uv environment,
 does not import project modules; holds its own passwords — read from password.json
 in this directory ({"passwords": ["...", ...]}).
@@ -16,7 +16,6 @@ Structure flags (exe_present, macro_docs, nested_archives from the entry list;
 multi_part from the input file name) are computed here.
 Loaded and executed by scripts/run_extractor.py; the result dict lands in
 _result.json via the runner.
-The downstream context packer reads only the out dir, decoupled from this dict.
 """
 from __future__ import annotations
 
