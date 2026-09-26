@@ -1,4 +1,4 @@
-"""AiScraper command line: scan / backend.
+"""AiZipScraper command line: scan / backend.
 
 scan is one pipeline: register targets (non-recursive) under a path, extract
 them in child processes, build paged context, run one identify conversation per
@@ -214,7 +214,7 @@ def cmd_backend(args):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        prog="aiscraper",
+        prog="aizipscraper",
         description="AI-driven content scraper for archives and files",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)

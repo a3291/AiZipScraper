@@ -1,5 +1,5 @@
 [project]
-name = "aiscraper"
+name = "aizipscraper"
 version = "0.2.0"
 description = "AI-driven content scraper for archives and files"
 license = "Apache-2.0"
@@ -10,4 +10,4 @@ dependencies = [
 ]
 
 [project.scripts]
-aiscraper = "main:main"
+aizipscraper = "main:main"

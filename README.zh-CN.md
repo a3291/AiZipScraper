@@ -1,6 +1,6 @@
 [English](README.md) | 简体中文
 
-# AiScraper
+# AiZipScraper
 
 AI 驱动的压缩包/文件内容刮削器：登记目标，用可插拔提取器取文本，让本地大模型通过分页对话识别每个目标，并在目标旁写一份 `publish.json`。
 

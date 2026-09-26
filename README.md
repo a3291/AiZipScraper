@@ -1,6 +1,6 @@
 [English](README.md) | 简体中文
 
-# AiScraper
+# AiZipScraper
 
 AI-driven content scraper for archives and files: register targets, pull text
 through a pluggable extractor, let a local LLM identify each target through a
