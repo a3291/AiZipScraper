@@ -83,7 +83,7 @@ def build(extracted_dir: str | Path, page_chars: int,
           sentence_max_ratio: float = 0.1) -> dict:
     """Main entry: extracted/ → context dict (for serialization into context.json).
 
-    Return shape: {version, page_chars, pages: [{no, chars, text}],
+    Return shape: {page_chars, pages: [{no, chars, text}],
     tail_page: {no, chars, text}, files_index, stats: {sentences_skipped,
     page_count, file_count}} — the in-memory handover to the session engine.
     """
@@ -140,7 +140,6 @@ def build(extracted_dir: str | Path, page_chars: int,
     cat.append(tail)
 
     return {
-        "version": "2.0",
         "page_chars": page_chars,
         "pages": [{"no": i + 1, "chars": len(p), "text": p}
                   for i, p in enumerate(page_texts)],

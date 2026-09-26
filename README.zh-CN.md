@@ -107,7 +107,8 @@ uv run python scripts/run_logger.py <run_id>
     "page_chars": 3000,
     "remind_at": 32000,
     "force_publish_at": 60000,
-    "max_turns": -1
+    "max_turns": -1,
+    "chatlog": false
   },
   "limits": {
     "extract_timeout_s": 1800,
@@ -120,11 +121,12 @@ uv run python scripts/run_logger.py <run_id>
 | 键 | 含义 |
 |-----|---------|
 | `concurrency` | 一个数值同时管提取池与识别池（两池不重叠；`--workers` 仅本次覆盖） |
-| `ai.base_url` | 留空 → 自动探测：LM Studio 原生 `/api/v1/chat` → LM Studio `/v1/chat/completions` → Ollama `/v1/chat/completions`（先做可达性检查再发最小会话，第一个通过者胜出）；非空则按原样使用。请求形态跟随 URL：以 `/chat` 结尾的完整路径发原生 `{model, input}` 请求体；`/chat/completions` 或裸基座（如 `/v1`）发 messages 数组 |
+| `ai.base_url` | 必填、非空（留空在加载时报错，不做端点探测）。请求形态跟随 URL：以 `/chat` 结尾的完整路径发原生 `{model, input}` 请求体；`/chat/completions` 或裸基座（如 `/v1`）发 messages 数组 |
 | `ai.model` | 留空则自动取后端第一个已加载模型 |
 | `ai.page_chars` | 目标页大小（字符数） |
 | `ai.remind_at` / `ai.force_publish_at` | 估算令牌阈值：先提醒 AI，随后强制发布 |
 | `ai.max_turns` | 会话轮上限；负数（默认 `-1`）= 无限——令牌顶格、停滞检测与非法 JSON 容忍仍会使会话终止 |
+| `ai.chatlog` | chatlog 模式开关；`--auto-chatlog` 仅本次强制开启 |
 | `limits.extract_timeout_s` | 单目标提取的时间盒 |
 | `limits.max_text_file_bytes` | 超过此大小的文件只登记、不作为文本读取 |
 | `limits.sentence_max_ratio` | 超过 `page_chars × ratio` 的句子整句跳过；分页对齐句子末尾，句子不跨页切断 |
@@ -135,15 +137,7 @@ uv run python scripts/run_logger.py <run_id>
 
 `backend.py` 在每个识别会话的每一轮与 AI 服务器通信一次。
 
-**端点解析**（每次 run 一次，首个会话开始前）：
-
-- `ai.base_url` 非空 → 按原样使用
-- `ai.base_url` 为空 → 按序探测候选：LM Studio 原生
-  `http://localhost:1234/api/v1/chat` → LM Studio
-  `http://localhost:1234/v1/chat/completions` → Ollama
-  `http://localhost:11434/v1/chat/completions`；每个候选先做可达性 POST
-  （收到任何 HTTP 响应即算可达），再发一次最小会话（必须能取回文本），
-  第一个通过者胜出——端点、请求形态与自动选中的模型记录后供整个 run 使用
+**端点解析**（每次 run 一次，首个会话开始前）：`ai.base_url` 必填，按原样使用。
 
 **请求形态跟随 URL：**
 
@@ -156,7 +150,7 @@ uv run python scripts/run_logger.py <run_id>
 
 **会话契约**：模型每轮返回一个 JSON 对象——`{"action": "read_page", "page": N}`、`{"action": "publish", "identity": {…}}` 或 `{"action": "help"}`（按需请求协议复述，无次数上限，每次消耗一轮；提取器 prompt.json 的 `help` 键）。护栏：非法 JSON 容忍一次；publish 的 identity 非对象或缺 `title`/`category`/`summary` 键给 3 次提醒重输（首次 publish 不计，用尽放弃）；重复页/不存在页的停滞转入强制发布；估算令牌达到 `remind_at` 提醒、达到 `force_publish_at` 强制（强制后再给两轮翻页机会，然后放弃）；`max_turns` 为负数时不设轮上限。放弃路径以带标记的 `unknown` 侧车收尾。
 
-**Chatlog 模式**（`--auto-chatlog`）：历史超过水位线时折叠进与页面 context 平行的上下文通道——`remind_at` 触发总结侧调用，JSON 摘要与已读进度并入重发开卷 prompt 的末尾页段位（对话通道不出现摘要消息；软边界：`messages.json` 逐条保留全部原始消息）；无有效摘要时 `force_publish_at` 直接强制滚页；`max_turns` 换义为滚动次数上限（负数 = 不限），达到后两条水位线恢复上述原意。
+**Chatlog 模式**（config.json 的 `ai.chatlog`；`--auto-chatlog` 仅本次强制开启）：历史超过水位线时折叠进与页面 context 平行的上下文通道——`remind_at` 触发总结侧调用，JSON 摘要与已读进度并入重发开卷 prompt 的末尾页段位（对话通道不出现摘要消息；软边界：`messages.json` 逐条保留全部原始消息）；无有效摘要时 `force_publish_at` 直接强制滚页；`max_turns` 换义为滚动次数上限（负数 = 不限），达到后两条水位线恢复上述原意。
 
 ## 侧车格式
 
@@ -198,6 +192,8 @@ uv run python scripts/run_logger.py <run_id>
 │   ├── result_contract.json       # _result.json 契约（参考件）
 │   └── default/                   # extractor.py + config.json + password.json
 │                                  #   + prompt.json + publish.json
+│                                  #   + result_contract.json + heartbeat_contract.json
+│                                  #   （运行时文件参考件）
 └── runs/                          # 每次 scan 的归档（不入库）
 ```
 

@@ -12,9 +12,10 @@ publish with a non-object identity or missing title/category/summary →
 3 re-input reminders (the first publish does not count) → degrade.
 The model may request the protocol recap at any time via action "help"
 (unlimited; each call costs a turn, token ceilings still apply).
-Chatlog mode (cfg["chatlog"], from --auto-chatlog): remind_at = summary
-trigger (side-call digest); force_publish_at = forced roll without a digest
-(soft boundary: raw messages stay archived in messages.json). A roll re-issues
+Chatlog mode (ai.chatlog in config.json, overridden by --auto-chatlog):
+remind_at = summary trigger (side-call digest); force_publish_at = forced roll
+without a digest (soft boundary: raw messages stay archived in messages.json).
+A roll re-issues
 the opening prompt with the digests and read-progress merged into the
 tail-page section — a context channel parallel to the page context, not a
 dialogue message. max_turns = roll cap (-1 unlimited; once reached the
@@ -38,13 +39,15 @@ CONFIG = paths.CONFIG
 EXTRACTORS = paths.EXTRACTORS
 
 REQUIRED_AI_KEYS = ["base_url", "model", "api_key", "temperature", "timeout",
-                    "page_chars", "remind_at", "force_publish_at", "max_turns"]
+                    "page_chars", "remind_at", "force_publish_at", "max_turns",
+                    "chatlog"]
 
 REQUIRED_PROMPT_KEYS = ["system", "first", "remind", "force_publish",
                         "bad_json_retry", "publish_retry", "help",
                         "force_publish_only", "dup_page",
                         "stall_to_publish", "page_deliver",
-                        "chatlog_summarize", "chatlog_roll"]
+                        "chatlog_summarize", "chatlog_summarize_reply",
+                        "chatlog_roll"]
 
 SUMMARY_MAX_CHARS = 4000   # a longer summary counts as invalid → forced roll
 
@@ -61,6 +64,11 @@ def load_config(path: str | None = None) -> dict:
     missing = [k for k in REQUIRED_AI_KEYS if k not in ai]
     if missing:
         raise ValueError(f"config.json: {missing} (file {p})")
+    if not isinstance(ai.get("base_url"), str) or not ai["base_url"].strip():
+        raise ValueError("config.json ai.base_url must be a non-empty string "
+                         "(no endpoint probing fallback)")
+    if not isinstance(ai.get("chatlog"), bool):
+        raise ValueError("config.json ai.chatlog must be a boolean")
 
     conc = raw.get("concurrency")
     if not isinstance(conc, int) or conc < 1:
@@ -104,7 +112,7 @@ def load_prompts(path: str | None = None) -> dict:
     if sorted(enum) != sorted(schema.CATEGORIES):
         raise ValueError(f"prompt.json category enum {enum} does not match "
                          f"schema.CATEGORIES {schema.CATEGORIES}")
-    prompts = {k: v["text"] for k, v in data["prompts"].items()}
+    prompts = {k: v.get("text", "") for k, v in data["prompts"].items()}
     missing = [k for k in REQUIRED_PROMPT_KEYS if k not in prompts]
     if missing:
         raise ValueError(f"prompt.json missing prompt keys: {missing} (file {p})")
@@ -162,7 +170,7 @@ class MessageLog:
         try:
             return json.loads(self.path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
-            return {"version": "2.0", "packages": {}}
+            return {"packages": {}}
 
     def append(self, role: str, text: str, prompt_key: str | None = None):
         with MessageLog._lock:
@@ -297,7 +305,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
             warnings.append(f"chatlog summary request failed: "
                             f"{type(e).__name__}: {e}")
             return None
-        mlog.append("assistant", content, "chatlog_summarize_reply")
+        mlog.append(R["chatlog_summarize_reply"], content, "chatlog_summarize_reply")
         out = _extract_json(content)
         s = out.get("summary") if isinstance(out, dict) else None
         if not isinstance(s, str) or not s.strip():

@@ -150,7 +150,7 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
     try:
         with CTX_LOCK:
             ctx_all = json.loads(ctx_path.read_text(encoding="utf-8-sig")) \
-                if ctx_path.exists() else {"version": "2.0", "packages": {}}
+                if ctx_path.exists() else {"packages": {}}
             ctx_all["packages"][entry_id] = ctx_pkg
             _atomic_write_json(ctx_path, ctx_all)
     except OSError as e:

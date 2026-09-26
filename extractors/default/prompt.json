@@ -81,6 +81,9 @@
       "role": "user",
       "text": "The conversation context is approaching the limit. Summarize the conversation so far as one JSON object with a single key \"summary\": a compact digest covering the pages read and their key information, the current progress toward a conclusion, and the follow-up plan. Keep it under 4000 characters. Output exactly one JSON object."
     },
+    "chatlog_summarize_reply": {
+      "role": "assistant"
+    },
     "chatlog_roll": {
       "role": "user",
       "text": "===== Chatlog context · round {roll_no}/{max_rolls} =====\nEarlier conversation, compacted into digests (raw messages archived on disk):\n\n{summaries_block}\n\nPages read so far: {pages_read} of {page_total} total."

@@ -118,7 +118,8 @@ uv run python scripts/run_logger.py <run_id>
     "page_chars": 3000,
     "remind_at": 32000,
     "force_publish_at": 60000,
-    "max_turns": -1
+    "max_turns": -1,
+    "chatlog": false
   },
   "limits": {
     "extract_timeout_s": 1800,
@@ -131,11 +132,12 @@ uv run python scripts/run_logger.py <run_id>
 | Key | Meaning |
 |-----|---------|
 | `concurrency` | one value governs both the extract pool and the identify pool (the pools do not overlap; `--workers` overrides per run) |
-| `ai.base_url` | empty → auto-probe: LM Studio native `/api/v1/chat` → LM Studio `/v1/chat/completions` → Ollama `/v1/chat/completions` (first passing reachability + a minimal session wins); a non-empty value is used as-is. Request style follows the URL: full path ending in `/chat` sends the native `{model, input}` body; `/chat/completions` or a bare base (e.g. `/v1`) sends the messages array |
+| `ai.base_url` | required, non-empty (an empty value fails at load time; no endpoint probing). Request style follows the URL: full path ending in `/chat` sends the native `{model, input}` body; `/chat/completions` or a bare base (e.g. `/v1`) sends the messages array |
 | `ai.model` | leave empty to auto-pick the first loaded model on the backend |
 | `ai.page_chars` | target page size in characters |
 | `ai.remind_at` / `ai.force_publish_at` | estimated-token thresholds: nudge the AI, then force a publish |
 | `ai.max_turns` | session turn cap; negative (default `-1`) = unlimited — the token ceilings, stall detection and invalid-JSON tolerance still terminate the session |
+| `ai.chatlog` | chatlog mode on/off; `--auto-chatlog` forces it on for one run |
 | `limits.extract_timeout_s` | per-target extraction time box |
 | `limits.max_text_file_bytes` | files above this size are registered but not read as text |
 | `limits.sentence_max_ratio` | sentences longer than `page_chars × ratio` are skipped whole; pages break at sentence ends, a sentence is not split across pages |
@@ -147,15 +149,7 @@ Prompts (`prompt.json`) and the sidecar template (`publish.json`) live in the ex
 `backend.py` talks to the AI server once per turn of every recognition session.
 
 **Endpoint resolution** (once per run, before the first session):
-
-- `ai.base_url` non-empty → used as-is
-- `ai.base_url` empty → candidates probed in order: LM Studio native
-  `http://localhost:1234/api/v1/chat` → LM Studio
-  `http://localhost:1234/v1/chat/completions` → Ollama
-  `http://localhost:11434/v1/chat/completions`; each gets a reachability POST
-  (any HTTP response counts) plus a minimal session (text must come back), and
-  the first passing candidate wins — endpoint, request style and the
-  auto-picked model are recorded for the whole run
+`ai.base_url` is required and used as-is.
 
 **Request style follows the URL:**
 
@@ -181,7 +175,8 @@ token totals (two more page turns after force, then give up); `max_turns` caps
 the session unless negative. Give-up paths end in a flagged `unknown`
 sidecar.
 
-**Chatlog mode** (`--auto-chatlog`): when the history grows past the
+**Chatlog mode** (`ai.chatlog` in config.json; `--auto-chatlog` forces it on
+for one run): when the history grows past the
 watermarks it is folded into a context channel parallel to the page context —
 `remind_at` triggers a summary side-call whose JSON digest, together with the
 read progress, is merged into the tail-page section of the re-issued opening
@@ -231,6 +226,8 @@ meanings above.
 │   ├── result_contract.json       # _result.json contract (reference copy)
 │   └── default/                   # extractor.py + config.json + password.json
 │                                  #   + prompt.json + publish.json
+│                                  #   + result_contract.json + heartbeat_contract.json
+│                                  #   (runtime-file reference copies)
 └── runs/                          # per-scan archives (not tracked)
 ```
 
