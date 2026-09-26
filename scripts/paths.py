@@ -23,18 +23,11 @@ def read_json(path):
     return json.loads(Path(path).read_text("utf-8"))
 
 
-def read_pkgs(path):
-    """Per-key package archive: the existing doc or a fresh {"packages": {}}."""
+def read_or(path, default):
+    """The existing doc or the default; missing file is first read, not a
+    fallback mid-flow."""
     p = Path(path)
-    return read_json(p) if p.exists() else {"packages": {}}
-
-
-def update_pkg(path, key, value):
-    """Atomically set packages[key] = value (safe across threads)."""
-    with _WRITE_LOCK:
-        doc = read_pkgs(path)
-        doc["packages"][key] = value
-        write_json(path, doc)
+    return read_json(p) if p.exists() else default
 
 
 def append_json_list(path, key, item):

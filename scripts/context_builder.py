@@ -8,7 +8,7 @@ sentence. File recognition is delegated to context_scanner.
 import os
 from pathlib import Path
 
-from paths import read_pkgs, update_pkg
+from paths import read_or, write_json
 import context_scanner
 
 
@@ -45,22 +45,23 @@ def paginate(text, page_chars, sentence_max_ratio):
     return pages
 
 
-def write_doc(run_dir, key, filename, append_text, page_chars, sentence_max_ratio):
+def write_doc(run_dir, filename, append_text, page_chars, sentence_max_ratio):
     """Append text to an append-only paged document (chatlog.json or
     memo.json) under runs/<run_id>, re-page the accumulated document and
     return its pages."""
     p = Path(run_dir) / filename
-    pkg = read_pkgs(p)["packages"].setdefault(key, {"sections": [], "pages": []})
+    pkg = read_or(p, {"sections": [], "pages": []})
     pkg["sections"].append(append_text)
     pkg["pages"] = paginate("\n".join(pkg["sections"]), page_chars, sentence_max_ratio)
-    update_pkg(p, key, pkg)
+    write_json(p, pkg)
     return pkg["pages"]
 
 
 def build(out_dir, page_chars, sentence_max_ratio, sniff_bytes):
     """Walk out_dir (skipping _-prefixed names), collect text via
     context_scanner, and return {page_chars, pages, stats}; page 1 is the
-    catalog, the last page is the extracted-file metadata."""
+    catalog, the last page is the extracted-file metadata. The caller
+    archives the result as the run's context.json."""
     out_dir = Path(out_dir)
     files = []
     skipped = []

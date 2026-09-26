@@ -1,5 +1,10 @@
 """End-to-end scan tests with a fake backend: extraction return-value
-judging, conversation flow, publish sidecars, registry states."""
+judging, conversation flow, publish sidecars, per-run states.
+
+One run carries exactly one target: a scan over a folder of N files
+produces N runs; every run directory stores its documents directly
+(context.json / messages.json / memo.json / chatlog.json / publish.json),
+no grouping envelope."""
 import json
 import shutil
 import sys
@@ -72,7 +77,6 @@ def fake_backend(replies):
 
     backend.chat = chat
     backend.endpoint_available = lambda cfg, timeout=10: True
-    backend.resolve_model = lambda cfg, timeout=10: "fake-model"
     return calls
 
 
@@ -89,20 +93,23 @@ def run_scan(replies, single=False, **ai_over):
         paths.RUNS_DIR = old_runs
 
 
-def load_run(runs_dir):
-    run_dir = next(runs_dir.iterdir())
-    reg = json.loads((run_dir / "registry.json").read_text("utf-8"))
-    run_log = json.loads((run_dir / "run.json").read_text("utf-8"))
-    msgs = ctx = None
-    for name, slot in (("messages.json", "m"), ("context.json", "c")):
-        p = run_dir / name
-        if p.exists():
-            doc = json.loads(p.read_text("utf-8"))
-            if slot == "m":
-                msgs = doc
-            else:
-                ctx = doc
-    return reg, msgs, run_log, ctx
+def run_dir_of(runs_dir, name="pack.zip"):
+    """The run directory whose registry target ends with name."""
+    for d in sorted(runs_dir.iterdir()):
+        reg = json.loads((d / "registry.json").read_text("utf-8"))
+        if reg["target"].endswith(name):
+            return d
+    raise AssertionError(f"no run for {name}")
+
+
+def load_run(runs_dir, name="pack.zip"):
+    """(registry, messages-or-None, run_dir) of the run for name; every
+    document is stored directly in the run directory."""
+    d = run_dir_of(runs_dir, name)
+    reg = json.loads((d / "registry.json").read_text("utf-8"))
+    p = d / "messages.json"
+    msgs = json.loads(p.read_text("utf-8"))["messages"] if p.exists() else None
+    return reg, msgs, d
 
 
 def read_sidecar(target):
@@ -118,26 +125,25 @@ def test_direct_publish():
     pub = json.dumps({"action": "publish", "page": None, "identity": IDENTITY})
     code, targets, runs_dir = run_scan([pub])
     ok(code == 0, "e2e: exit 0")
-    reg, msgs, run_log, ctx = load_run(runs_dir)
-    ok(all(e["state"] == "ok" for e in reg["targets"].values()),
-        "e2e: all targets ok")
-    ok(len(run_log["runs"]) == 1, "e2e: run.json has one entry per extractor run")
-    ok(all(r["ok"] for r in run_log["runs"]), "e2e: extractor runs normal")
-    ok(set(ctx["packages"].keys()) == {"t1"}, "e2e: context per target")
+    run_ids = sorted(d.name for d in runs_dir.iterdir())
+    ok(len(run_ids) == 1, "e2e: one target -> one run")
+    reg, msgs, d = load_run(runs_dir)
+    ok(reg["state"] == "ok", "e2e: run ok")
+    ok(reg["target"].endswith("pack.zip"), "e2e: registry carries the target")
+    run_log = json.loads((d / "run.json").read_text("utf-8"))
+    ok(len(run_log["runs"]) == 1, "e2e: run.json has one extractor entry")
+    ok(run_log["runs"][0]["ok"], "e2e: extractor run normal")
+    ctx = json.loads((d / "context.json").read_text("utf-8"))
+    ok(ctx["pages"][0]["text"].startswith("Catalog"), "e2e: catalog is page 1")
+    ok("text files packed" in ctx["pages"][-1]["text"],
+        "e2e: metadata is the last page")
     side = read_sidecar(targets / "pack.zip")
     ok(list(side["identity"].keys()) == list(IDENTITY.keys()),
         "e2e: identity key order from template")
-    run_dir = next(runs_dir.iterdir())
-    pub = json.loads(
-        (run_dir / "publishes" / "pack.zip.publish.json").read_text("utf-8"))
-    ok(pub["identity"] == side["identity"],
-        "e2e: publishes copy in run dir")
-    pkg = ctx["packages"]["t1"]
-    ok(pkg["pages"][0]["text"].startswith("Catalog"), "e2e: catalog is page 1")
-    ok("text files packed" in pkg["pages"][-1]["text"],
-        "e2e: metadata is the last page")
+    pub = json.loads((d / "publish.json").read_text("utf-8"))
+    ok(pub["identity"] == side["identity"], "e2e: publish copy in run dir")
     ok(any(m.get("prompt_key") == "chatlog" and "no history yet" in m["text"]
-           for m in msgs["packages"]["t1"]), "e2e: chatlog opens without history")
+           for m in msgs), "e2e: chatlog opens without history")
     cleanup(runs_dir, targets)
 
 
@@ -148,12 +154,11 @@ def test_page_flow():
         json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
     ]
     code, targets, runs_dir = run_scan(replies, single=True)
-    reg, msgs, run_log, ctx = load_run(runs_dir)
-    keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
     ok("page_deliver" in keys, "flow: page delivered")
     ok(keys.count("stall_to_publish") == 1, "flow: stall warned once")
-    entry = reg["targets"][str(targets / "pack.zip")]
-    ok(entry["state"] == "ok", "flow: ok after stall")
+    ok(reg["state"] == "ok", "flow: ok after stall")
     side = read_sidecar(targets / "pack.zip")
     ok(side["identity"]["confidence"] == 0.9, "flow: confidence intact")
     cleanup(runs_dir, targets)
@@ -166,39 +171,51 @@ def test_publish_retry():
     good = json.dumps({"action": "publish", "page": None, "identity": IDENTITY})
     code, targets, runs_dir = run_scan(
         [read, bad, good], single=True, max_turns=0, force_publish_at=5)
-    reg, msgs, run_log, ctx = load_run(runs_dir)
-    keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
     ok("force_publish" in keys, "retry: forced publish active")
     ok(keys.count("publish_retry") == 1, "retry: one retry prompt")
-    ok(reg["targets"][str(targets / "pack.zip")]["state"] == "ok",
-        "retry: ok after fix")
+    ok(reg["state"] == "ok", "retry: ok after fix")
     cleanup(runs_dir, targets)
 
 
-def test_publish_unforced_bails():
-    """A malformed publish before any force gives up at once: the target is
-    an error and no sidecar is written."""
+def test_publish_unforced_retry():
+    """A malformed publish gets a remind with the missing fields, forced or
+    not; the run recovers when the model fixes it."""
     bad = json.dumps({"action": "publish", "page": None, "identity": {"title": "x"}})
-    code, targets, runs_dir = run_scan([bad])
-    reg, msgs, run_log, ctx = load_run(runs_dir)
-    keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
-    ok("publish_retry" not in keys, "unforced bail: no retry prompt")
-    entry = reg["targets"][str(targets / "pack.zip")]
-    ok(entry["state"] == "error", "unforced bail: error state")
-    ok("gave up" in entry["error"], "unforced bail: reason in error")
+    good = json.dumps({"action": "publish", "page": None, "identity": IDENTITY})
+    code, targets, runs_dir = run_scan([bad, good])
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
+    ok(keys.count("publish_retry") == 1, "unforced retry: one remind sent")
+    ok(reg["state"] == "ok", "unforced retry: ok after fix")
+    ok((targets / "pack.zip.publish.json").exists(),
+        "unforced retry: sidecar written")
+    cleanup(runs_dir, targets)
+
+
+def test_publish_retries_exhausted():
+    """publish_retries reminds in total; the next malformed publish gives
+    up: the run is an error and no sidecar is written."""
+    bad = json.dumps({"action": "publish", "page": None, "identity": {"title": "x"}})
+    code, targets, runs_dir = run_scan([bad], publish_retries=3)
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
+    ok(keys.count("publish_retry") == 3, "exhausted: three reminds")
+    ok(reg["state"] == "error", "exhausted: error state")
+    ok("gave up" in reg["error"], "exhausted: reason in error")
     ok(not (targets / "pack.zip.publish.json").exists(),
-        "unforced bail: no sidecar")
+        "exhausted: no sidecar")
     cleanup(runs_dir, targets)
 
 
 def test_bad_json_retry():
     good = json.dumps({"action": "publish", "page": None, "identity": IDENTITY})
     code, targets, runs_dir = run_scan(["not json", good])
-    reg, msgs, run_log, ctx = load_run(runs_dir)
-    keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
     ok(keys.count("bad_json_retry") == 1, "bad json: retry prompt sent")
-    ok(reg["targets"][str(targets / "pack.zip")]["state"] == "ok",
-        "bad json: ok after fix")
+    ok(reg["state"] == "ok", "bad json: ok after fix")
     cleanup(runs_dir, targets)
 
 
@@ -213,11 +230,10 @@ def test_forced_roll():
             json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
         ])
         code = cli.main(["scan", str(tmp_t), "--config", str(cfg_path), "--workers", "1"])
-        reg, msgs, run_log, ctx = load_run(paths.RUNS_DIR)
-        sess = {m["session"] for m in msgs["packages"]["t1"]}
+        reg, msgs, d = load_run(paths.RUNS_DIR)
+        sess = {m["session"] for m in msgs}
         ok(len(sess) >= 2, "roll: new session opened")
-        ok(all(e["state"] == "ok" for e in reg["targets"].values()),
-            "roll: still ok")
+        ok(reg["state"] == "ok", "roll: still ok")
     finally:
         paths.RUNS_DIR = old_runs
         shutil.rmtree(tmp_t, ignore_errors=True)
@@ -230,10 +246,10 @@ def test_help_action():
         json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
     ]
     code, targets, runs_dir = run_scan(replies, single=True)
-    reg, msgs, run_log, ctx = load_run(runs_dir)
-    keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
     ok(keys.count("help") == 1, "help: recap sent once")
-    ok(reg["targets"][str(targets / "pack.zip")]["state"] == "ok", "help: ok")
+    ok(reg["state"] == "ok", "help: ok")
     cleanup(runs_dir, targets)
 
 
@@ -250,14 +266,12 @@ def test_read_chatlog():
             json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
         ])
         code = cli.main(["scan", str(tmp_t), "--config", str(cfg_path), "--workers", "1"])
-        reg, msgs, run_log, ctx = load_run(paths.RUNS_DIR)
-        keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+        reg, msgs, d = load_run(paths.RUNS_DIR)
+        keys = [m.get("prompt_key") for m in msgs]
         ok(keys.count("chatlog_deliver") == 2, "chatlog: page rereadable")
-        chatlog = json.loads(
-            (next(paths.RUNS_DIR.iterdir()) / "chatlog.json").read_text("utf-8"))
-        ok("t1" in chatlog["packages"], "chatlog: persisted under run")
-        ok(reg["targets"][str(tmp_t / "pack.zip")]["state"] == "ok",
-            "chatlog: ok")
+        chatlog = json.loads((d / "chatlog.json").read_text("utf-8"))
+        ok(chatlog["sections"], "chatlog: persisted under run")
+        ok(reg["state"] == "ok", "chatlog: ok")
     finally:
         paths.RUNS_DIR = old_runs
         shutil.rmtree(tmp_t, ignore_errors=True)
@@ -272,17 +286,16 @@ def test_memo():
         json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
     ]
     code, targets, runs_dir = run_scan(replies, single=True)
-    reg, msgs, run_log, ctx = load_run(runs_dir)
-    keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
     ok("memo_saved" in keys, "memo: saved")
     ok("memo_deliver" in keys, "memo: delivered on read")
     ok(any(m.get("prompt_key") == "memo_deliver" and m["text"].endswith("note: sample zip")
-           for m in msgs["packages"]["t1"]), "memo: delivered page text")
-    memo = json.loads((next(runs_dir.iterdir()) / "memo.json").read_text("utf-8"))
-    ok(memo["packages"]["t1"]["sections"] == ["note: sample zip"],
-        "memo: appended section")
-    ok(memo["packages"]["t1"]["pages"], "memo: paged document")
-    ok(reg["targets"][str(targets / "pack.zip")]["state"] == "ok", "memo: ok")
+           for m in msgs), "memo: delivered page text")
+    memo = json.loads((d / "memo.json").read_text("utf-8"))
+    ok(memo["sections"] == ["note: sample zip"], "memo: appended section")
+    ok(memo["pages"], "memo: paged document")
+    ok(reg["state"] == "ok", "memo: ok")
     cleanup(runs_dir, targets)
 
 
@@ -293,11 +306,10 @@ def test_memo_reject():
         json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
     ]
     code, targets, runs_dir = run_scan(replies, single=True)
-    reg, msgs, run_log, ctx = load_run(runs_dir)
-    keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
     ok(keys.count("memo_reject") == 1, "memo reject: non-string write refused")
-    ok(reg["targets"][str(targets / "pack.zip")]["state"] == "ok",
-        "memo reject: still ok")
+    ok(reg["state"] == "ok", "memo reject: still ok")
     cleanup(runs_dir, targets)
 
 
@@ -309,10 +321,9 @@ def test_refused_target():
     try:
         fake_backend([])
         code = cli.main(["scan", str(tmp), "--config", str(make_config()[0]), "--workers", "1"])
-        reg, msgs, run_log, ctx = load_run(paths.RUNS_DIR)
-        entry = reg["targets"][str(tmp / "plain.txt")]
-        ok(entry["state"] == "error", "refused: error state")
-        ok("not a zip/7z archive" in entry["error"], "refused: reason recorded")
+        reg, msgs, d = load_run(paths.RUNS_DIR, "plain.txt")
+        ok(reg["state"] == "error", "refused: error state")
+        ok("not a zip/7z archive" in reg["error"], "refused: reason recorded")
         ok(msgs is None, "refused: no conversation")
     finally:
         paths.RUNS_DIR = old_runs
@@ -331,24 +342,101 @@ def test_max_turns_zero_remind():
             json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
         ])
         code = cli.main(["scan", str(tmp_t), "--config", str(cfg_path), "--workers", "1"])
-        reg, msgs, run_log, ctx = load_run(paths.RUNS_DIR)
-        keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
+        reg, msgs, d = load_run(paths.RUNS_DIR)
+        keys = [m.get("prompt_key") for m in msgs]
         ok("remind" in keys, "max_turns: remind fallback at cap")
-        ok(reg["targets"][str(tmp_t / "pack.zip")]["state"] == "ok",
-            "max_turns: still ok")
+        ok(reg["state"] == "ok", "max_turns: still ok")
     finally:
         paths.RUNS_DIR = old_runs
         shutil.rmtree(tmp_t, ignore_errors=True)
         shutil.rmtree(paths.RUNS_DIR, ignore_errors=True)
 
 
+def test_forced_help_once_then_refused():
+    """At force the engine recaps the protocol itself once; afterwards a
+    help call is refused with a remind that counts."""
+    replies = [
+        json.dumps({"action": "read_page", "page": 1, "identity": None}),
+        json.dumps({"action": "help", "page": None, "identity": None}),
+        json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
+    ]
+    code, targets, runs_dir = run_scan(
+        replies, single=True, max_turns=0, force_publish_at=5)
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
+    ok(keys.count("force_publish") == 1, "forced: force announced")
+    ok(keys.count("help") == 1, "forced: engine recaps once, model help refused")
+    ok(keys.count("publish_retry") == 1, "forced: refused help counts")
+    ok(reg["state"] == "ok", "forced: ok after fix")
+    cleanup(runs_dir, targets)
+
+
+def test_forced_nonpublish_counts():
+    """In force any non-publish return is reminded and counted."""
+    replies = [
+        json.dumps({"action": "read_page", "page": 1, "identity": None}),
+        json.dumps({"action": "read_page", "page": 1, "identity": None}),
+        json.dumps({"action": "publish", "page": None, "identity": IDENTITY}),
+    ]
+    code, targets, runs_dir = run_scan(
+        replies, single=True, max_turns=0, force_publish_at=5)
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
+    ok(keys.count("publish_retry") == 1, "forced: non-publish reminded")
+    ok(reg["state"] == "ok", "forced: ok after publish")
+    cleanup(runs_dir, targets)
+
+
+def test_forced_nonpublish_exhausted():
+    """The remind budget is shared with publish retries; exhausted, the
+    run bails and no sidecar is written."""
+    replies = [
+        json.dumps({"action": "read_page", "page": 1, "identity": None}),
+        json.dumps({"action": "read_page", "page": 1, "identity": None}),
+        json.dumps({"action": "read_page", "page": 1, "identity": None}),
+    ]
+    code, targets, runs_dir = run_scan(
+        replies, single=True, max_turns=0, force_publish_at=5, publish_retries=1)
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
+    ok(keys.count("publish_retry") == 1, "exhausted: one remind for one retry")
+    ok(reg["state"] == "error", "exhausted: run error")
+    ok("gave up" in reg["error"], "exhausted: reason recorded")
+    ok(not (targets / "pack.zip.publish.json").exists(),
+        "exhausted: no sidecar")
+    cleanup(runs_dir, targets)
+
+
+def test_force_resets_countdown():
+    """Unforced reminds consume the pre-force budget; entering the forced
+    tail resets it: the tail always accommodates 1 + publish_retries
+    rounds regardless of what was spent before."""
+    bad = json.dumps({"action": "publish", "page": None, "identity": {"title": "x"}})
+    good = json.dumps({"action": "publish", "page": None, "identity": IDENTITY})
+    code, targets, runs_dir = run_scan(
+        [bad, bad, bad, good], single=True, max_turns=0,
+        force_publish_at=5, publish_retries=2)
+    reg, msgs, d = load_run(runs_dir)
+    keys = [m.get("prompt_key") for m in msgs]
+    ok(keys.count("publish_retry") == 3, "reset: 1 unforced + 2 forced reminds")
+    ok(keys.count("force_publish") == 1, "reset: force announced once")
+    ok(reg["state"] == "ok", "reset: ok after fresh countdown")
+    ok((targets / "pack.zip.publish.json").exists(), "reset: sidecar written")
+    cleanup(runs_dir, targets)
+
+
 if __name__ == "__main__":
     test_direct_publish()
     test_page_flow()
     test_publish_retry()
-    test_publish_unforced_bails()
+    test_publish_unforced_retry()
+    test_publish_retries_exhausted()
     test_bad_json_retry()
     test_forced_roll()
+    test_forced_help_once_then_refused()
+    test_forced_nonpublish_counts()
+    test_forced_nonpublish_exhausted()
+    test_force_resets_countdown()
     test_help_action()
     test_read_chatlog()
     test_memo()

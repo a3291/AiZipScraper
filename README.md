@@ -13,6 +13,70 @@ This project was built with the help of a large language model, so things can
 be a bit messy — I have fixed what I could. My code is far from masterful; the
 goal throughout has simply been a small, working tool.
 
+One run = one target, six steps, serial inside the run. Errors stop that run
+only — the pool moves on.
+
+```
+                       scan D:\downloads
+                              │
+              ┌───────────────┼───────────────────┐
+              │  serial prologue (cmd_scan)        │
+              │  load_config (missing key = abort) │
+              │  backend probe (down = abort)      │
+              │  prompt_builder load (read once)   │
+              │  _find_targets (first level only)  │
+              └───────────────┬───────────────────┘
+                              │
+                     target pool (runs run in parallel)
+             ┌────────────────┼────────────────┐
+             ▼                ▼                ▼
+        ┌─────────┐      ┌─────────┐      ┌─────────┐
+        │ run_id A│      │ run_id B│      │ run_id C│   ← serial inside
+        └────┬────┘      └────┬────┘      └────┬────┘
+             ▼                ▼                ▼
+   ╔═══════════════════════════════════════════════════╗
+   ║  Step 0 register: registry.json                    ║
+   ║  {run_id, target, status:running, state:""}        ║
+   ╚═════════════════════════╦═════════════════════════╝
+                             ▼
+   ┌─────────────────────────────────────────────────┐
+   │ Step 1 extract: subprocess extract() → extracted/ │
+   └────────────────┬────────────────┬───────────────┘
+              returns ok            exception/timeout/
+                    │               no files kept
+                    ▼                    ▼
+   ┌────────────────────────┐    ┌─────────────────────┐
+   │ Step 2 pack:           │    │ state="error"        │
+   │ file_to_text → pages   │    │ run stops,           │
+   │ → context.json         │    │ pool moves on        │
+   └───────────┬────────────┘    └─────────────────────┘
+               ▼
+   ┌─────────────────────────────────────────────────┐
+   │ Step 3 session: open system|context|add|chatlog|memo│
+   │   per turn: tokens → thresholds → roll            │
+   │   request → parse action → dispatch               │
+   │   forced tail: announce + one recap → publish only│
+   └───────────────┬──────────────┬───────────────────┘
+           publish in hand      non-recoverable
+                   ▼              ▼
+   ┌────────────────────────┐    ┌─────────────────────┐
+   │ Step 4 publish:        │    │ state="error"        │
+   │ fill template → check  │    │ run stops            │
+   └───────┬────────┬───────┘    └─────────────────────┘
+      check ok     fail
+           ▼          ▼
+   ┌─────────────┐ ┌─────────────────────┐
+   │ sidecar +   │ │ state="error"        │
+   │ run copy    │ │ nothing written      │
+   └──────┬──────┘ └─────────────────────┘
+          ▼
+   ╔═══════════════════════════════════╗
+   ║ Step 5 done: state="ok"            ║
+   ╚═════════════════════╦═════════════╝
+                         ▼
+              summary: ok=N, error=M
+```
+
 ## Layout
 
 ```
@@ -25,7 +89,7 @@ scripts/
   schema.py                   template-led validation
   backend.py                  AI backend access
   prompt_builder.py           prompts.json loading, {_contract:xxx} injection
-  registry.py                 target registry (single source of target state)
+  registry.py                 per-run registry (single source of run state)
   run_extractor.py            worker: loads <name>/extractor.py, returns extract() result
   context_scanner.py          file -> text recognition
   context_builder.py          paged packing (catalog head page, sentence-aligned pages, metadata tail page)
@@ -37,14 +101,15 @@ extractors/
     password.json             password candidates for encrypted archives
     prompts.json              conversation prompt registry ({role, frontier, text})
     publish.json              publish document template
-runs/<run_id>/
-  registry.json               target states
+runs/<run_id>/                one run = one target
+  registry.json               run state (target, ok / error)
   run.json                    extractor subprocess records
-  context.json                paged context per target
-  chatlog.json                rolled-up chatlog document per target
-  memo.json                   append-only paged memo document per target
+  extracted/                  extractor output for the target
+  context.json                paged context
+  chatlog.json                rolled-up chatlog document
+  memo.json                   append-only paged memo document
   messages.json               every raw message with its session number
-  publishes/                  complete copies of each <target>.publish.json
+  publish.json                copy of the run's published document
 ```
 
 ## Install
@@ -74,8 +139,8 @@ python main.py scan D:\downloads --workers 4
 ```
 
 Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
-(scan is non-recursive; one conversation per target; publishes
-`<target>.publish.json` next to each target).
+(scan is non-recursive; each target gets its own run and one conversation;
+publishes `<target>.publish.json` next to each target).
 
 ## Configuration (config.json)
 
@@ -100,32 +165,38 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
 
 ## Pipeline (scan)
 
+One run carries exactly one target: scanning a folder registers every
+first-level entry, then each entry gets its own run_id and its own closed
+flow — extract, context, identify, publish, done. An extractor error or an
+AI error stops that run only; other targets are unaffected.
+
 1. **register** — first level under the path (hidden entries, `_`-prefixed
-   names, `runs/`, existing `*.publish.json` skipped); each target becomes
-   `t1..tN` in `registry.json` with an empty state until processed.
-2. **extract** — `extractors/<name>/extractor.py` runs in a child process per
-   target; its `extract(in_path, out_dir)` return value decides normality.
+   names, `runs/`, existing `*.publish.json` skipped); each target opens its
+   own run directory whose `registry.json` records the target and its state
+   until processed.
+2. **extract** — `extractors/<name>/extractor.py` runs in a child process;
+   its `extract(in_path, out_dir)` return value decides normality.
    Extractor names must not start with `_` or contain path separators.
    Abnormal (exception, timeout, worker death, non-dict return, zero kept
-   files) marks the target `error` with the reason; no conversation runs.
-   Every run is logged to `run.json` with `ok`, the returned `result` or the
-   `error` reason, and elapsed time.
-3. **context** — files under the target's `extracted/<tN>/` are recognized by
+   files) marks the run `error` with the reason; no conversation runs.
+   The attempt is logged to the run's `run.json` with `ok`, the returned
+   `result` or the `error` reason, and elapsed time.
+3. **context** — files under the run's `extracted/` are recognized by
    `context_scanner` and packed into pages: a catalog head page, content
-   pages, and a metadata tail page; archived as `context.json`.
+   pages, and a metadata tail page; archived as the run's `context.json`.
    `_`-prefixed names are skipped.
-4. **identify** — one conversation per target. Opening scene:
+4. **identify** — one conversation. Opening scene:
    system, context (head page: the catalog), optional `add`, chatlog (tail
    page), memo. Every raw message is archived to `messages.json` with its
-   session number — sessions are divided right there; a summary fold opens
+   session number — sessions are divided right there; a summary roll opens
    the next session.
 5. **publish** — the template `publish.json` is filled with the identity the
    model produced — publish is the pure content conclusion, no process notes
    from any domain (extractor notes stay in `run.json`, conversation notes go
-   to the console) — checked against itself, and written as
-   `<target>.publish.json`; a complete copy goes to
-   `runs/<run_id>/publishes/`. A target ends as `ok` or `error`; an error
-   at any stage skips its remaining stages.
+   to the console) — checked against itself, written as
+   `<target>.publish.json`, and copied into the run's `publish.json`.
+   A run ends as `ok` or `error`; an error at any stage skips the run's
+   remaining stages.
 
 ## Conversation engine
 
@@ -138,13 +209,17 @@ The model drives with one JSON action per turn
 - `read_chatlog` — request a chatlog page; chatlog pages stay rereadable.
 - `read_memo` / `write_memo` — the memo is an append-only paged document,
   same shape as the chatlog: `write_memo` appends the `memo` field as a new
-  section, `read_memo` requests a page by number. It lives per target at
+  section, `read_memo` requests a page by number. It lives in the run at
   `runs/<run_id>/memo.json`, persists across sessions and rolls, and opens
   showing its latest page; non-string writes are refused with `memo_reject`.
-- `publish` — final identity. A malformed publish before any force aborts the
-  target as `error` (no file written); after force it gets `publish_retries`
-  re-input chances.
-- `help` — protocol recap, any time.
+- `publish` — final identity. A malformed publish gets a remind that names
+  the missing fields, forced or not; the remind counts down and, once used
+  up, the run aborts as `error` (no file written).
+- `help` — protocol recap; open until the forced tail — there the engine
+  announces the force, recaps the protocol once itself, and resets the
+  countdown: from then on every reply is expected to be a publish, help
+  and read/write are closed, and any other return gets a remind that
+  counts (the tail accommodates 1 + `publish_retries` rounds).
 
 Rolling: at `remind_at` the engine asks the model (side call,
 `{_contract:chatlog_summary}`) for a summary, checks it against the
@@ -163,10 +238,9 @@ content (role persona, payload slots). Contracts live in
 ## Publish format
 
 `<target>.publish.json` mirrors the template: identity (title, category,
-summary, tags, language, confidence) and nothing else. Each
-published document is also copied under `runs/<run_id>/publishes/`. A target
-whose publish fails the template check is marked `error` and no file is
-written.
+summary, tags, language, confidence) and nothing else. The published
+document is also copied into the run's `publish.json`. A run whose publish
+fails the template check is marked `error` and no file is written.
 
 ## Default extractor
 

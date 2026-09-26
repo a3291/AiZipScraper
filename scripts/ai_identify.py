@@ -13,7 +13,7 @@ from pathlib import Path
 import backend
 import context_builder
 import schema
-from paths import read_pkgs, update_pkg
+from paths import read_or, write_json
 
 REQUIRED_AI_KEYS = {
     "base_url", "model", "api_key", "temperature", "timeout", "probe_timeout",
@@ -44,10 +44,9 @@ class MessageLog:
     """Appends every raw message (with its session number) to messages.json;
     the session number of the next message derives from the archived ones."""
 
-    def __init__(self, run_dir, key):
+    def __init__(self, run_dir):
         self.run_dir = Path(run_dir)
-        self.key = key
-        self._entries = read_pkgs(self.run_dir / "messages.json")["packages"].get(key, [])
+        self._entries = read_or(self.run_dir / "messages.json", {"messages": []})["messages"]
         self.session = max(
             (e["session"] for e in self._entries if "session" in e), default=0
         )
@@ -60,7 +59,7 @@ class MessageLog:
         if prompt_key:
             entry["prompt_key"] = prompt_key
         self._entries.append(entry)
-        update_pkg(self.run_dir / "messages.json", self.key, self._entries)
+        write_json(self.run_dir / "messages.json", {"messages": self._entries})
 
 
 def _estimate_tokens(messages, chunk):
@@ -99,10 +98,10 @@ def run_session(context_pkg, pb, cfg, model, mlog):
     chatlog_pages = []
     usage_tokens = 0
 
-    def _load_memo(run_dir, key):
-        return read_pkgs(Path(run_dir) / "memo.json")["packages"].get(key, {}).get("pages", [])
+    def _load_memo(run_dir):
+        return read_or(Path(run_dir) / "memo.json", {"pages": []})["pages"]
 
-    memo_pages = _load_memo(mlog.run_dir, mlog.key)
+    memo_pages = _load_memo(mlog.run_dir)
 
     def memo_msg():
         if memo_pages:
@@ -174,7 +173,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             body = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
             kind = "raw"
         chatlog_pages = context_builder.write_doc(
-            mlog.run_dir, mlog.key, "chatlog.json",
+            mlog.run_dir, "chatlog.json",
             f"===== {kind} {rolls} =====\n{body}",
             ai["page_chars"], cfg["limits"]["sentence_max_ratio"],
         )
@@ -209,13 +208,32 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         return text.strip()
 
     def bail(reason):
-        """A give-up is an error, not a degraded result: abort the target."""
+        """A give-up is an error, not a degraded result: abort the run."""
         raise RuntimeError(f"gave up: {reason}")
 
-    def stall():
-        nonlocal forced
+    def refuse(reason):
+        """In force, any non-publish return gets one remind that counts
+        against the same publish_retries budget; False when exhausted."""
+        nonlocal retry_left
+        if retry_left <= 0:
+            return False
+        say("publish_retry", missing=reason, attempt_left=retry_left)
+        retry_left -= 1
+        return True
+
+    def enter_force(announce):
+        """Entering the forced tail announces itself, recaps the protocol
+        once, and resets the countdown: the tail accommodates
+        1 + publish_retries replies and every one of them is expected to
+        be a publish — help and read/write are closed (see dispatch)."""
+        nonlocal forced, retry_left
         forced = True
-        say("stall_to_publish")
+        retry_left = ai["publish_retries"]
+        say(announce)
+        say("help", page_total=page_total)
+
+    def stall():
+        enter_force("stall_to_publish")
 
     while True:
         can_roll = max_turns < 0 or rolls < max_turns
@@ -224,8 +242,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
                 roll(with_summary=False)
                 continue
             if not forced:
-                forced = True
-                say("force_publish")
+                enter_force("force_publish")
         elif usage_tokens >= ai["remind_at"]:
             if can_roll and not summary_tried:
                 summary_tried = True
@@ -247,12 +264,27 @@ def run_session(context_pkg, pb, cfg, model, mlog):
 
         obj = _extract_json(reply)
         if obj is None or not isinstance(obj, dict):
+            if forced:
+                if not refuse("reply is not one JSON object; only publish is accepted now"):
+                    return bail("non-publish output after force")
+                continue
             say("bad_json_retry")
             continue
 
         action = obj.get("action")
         if action == "help":
+            if forced:
+                # forced: the engine recapped the protocol itself once;
+                # help is closed from here on.
+                if not refuse("help is closed; only publish is accepted now"):
+                    return bail("non-publish output after force")
+                continue
             say("help", page_total=page_total)
+            continue
+
+        if forced and action != "publish":
+            if not refuse(f"action {action!r} is not publish; only publish is accepted now"):
+                return bail("non-publish output after force")
             continue
 
         if action == "publish":
@@ -260,7 +292,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             tmpl = pb.publish_template["identity"]
             problems = schema.check(ident if isinstance(ident, dict) else {}, tmpl)
             if problems:
-                if forced and retry_left > 0:
+                if retry_left > 0:
                     say(
                         "publish_retry",
                         missing="; ".join(p.split(".", 1)[-1] for p in problems),
@@ -293,7 +325,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
                 say("memo_reject", why="memo field must be a string")
                 continue
             memo_pages = context_builder.write_doc(
-                mlog.run_dir, mlog.key, "memo.json", incoming,
+                mlog.run_dir, "memo.json", incoming,
                 ai["page_chars"], cfg["limits"]["sentence_max_ratio"],
             )
             say("memo_saved", chars=len(incoming))
