@@ -72,18 +72,17 @@ def test_load_and_inject():
 
 def test_publish_template():
     tmpl = {"identity": {"title": "", "category": "", "summary": "", "tags": [],
-                         "language": [], "confidence": 0.0}, "warnings": []}
+                         "language": [], "confidence": 0.0}}
     doc = json.loads(json.dumps(tmpl))
     doc["identity"] = {"title": "T", "category": "media", "summary": "S",
                        "tags": ["a"], "language": ["en"], "confidence": 0.9}
-    doc["warnings"] = ["w"]
     ok(schema.check(doc, tmpl) == [], "publish: filled doc passes")
     bad = json.loads(json.dumps(tmpl))
     bad["identity"]["confidence"] = "high"
     ok(any("confidence" in p for p in schema.check(bad, tmpl)), "publish: bad confidence caught")
     bad2 = json.loads(json.dumps(tmpl))
-    del bad2["warnings"]
-    ok(any("warnings" in p for p in schema.check(bad2, tmpl)), "publish: warnings required")
+    bad2["extra"] = 1
+    ok(any("extra" in p for p in schema.check(bad2, tmpl)), "publish: unexpected key caught")
 
 
 def test_paginate():

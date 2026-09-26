@@ -99,10 +99,13 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
    system, context (head page: the catalog), optional `add`, chatlog (tail
    page), memo. Every raw message is archived to `messages.json` with its
    session number; `sessions.json` records session boundaries.
-5. **publish** — the template `publish.json` is filled with identity and
-   warnings, checked against itself, and written as `<target>.publish.json`;
-   a complete copy goes to `runs/<run_id>/publishes/`. A target ends as
-   `ok` or `error`; an error at any stage skips its remaining stages.
+5. **publish** — the template `publish.json` is filled with the identity the
+   model produced — publish is the pure content conclusion, no process notes
+   from any domain (extractor notes stay in `run.json`, conversation notes go
+   to the console) — checked against itself, and written as
+   `<target>.publish.json`; a complete copy goes to
+   `runs/<run_id>/publishes/`. A target ends as `ok` or `error`; an error
+   at any stage skips its remaining stages.
 
 ## Conversation engine
 
@@ -139,7 +142,7 @@ content (role persona, payload slots). Contracts live in
 ## Publish format
 
 `<target>.publish.json` mirrors the template: identity (title, category,
-summary, tags, language, confidence) plus program-filled warnings. Each
+summary, tags, language, confidence) and nothing else. Each
 published document is also copied under `runs/<run_id>/publishes/`. A target
 whose publish fails the template check is marked `error` and no file is
 written.

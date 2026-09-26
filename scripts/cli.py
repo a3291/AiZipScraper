@@ -44,11 +44,12 @@ def _find_targets(path):
     return targets
 
 
-def _publish(pb, target, identity, warnings):
+def _publish(pb, target, identity):
+    """Fill the publish template with the model's identity; publish is the
+    pure content conclusion — no process notes from any domain."""
     tmpl = pb.publish_template
     doc = copy.deepcopy(tmpl)
     doc["identity"] = {k: identity.get(k) for k in tmpl["identity"]}
-    doc["warnings"] = [str(w) for w in warnings]
     problems = schema.check(doc, tmpl)
     if problems:
         return None, doc, problems
@@ -60,8 +61,9 @@ def _publish(pb, target, identity, warnings):
 def _extract_one(name, target, entry, run_dir, timeout_s):
     """Run extract() in a child process; judge normality from its return.
 
-    Abnormal (exception, timeout, worker death, non-dict or zero kept files)
-    yields (None, reason). Normal yields (result_dict, None).
+    Returns None when normal, else the reason (exception, timeout, worker
+    death, non-dict return, zero kept files). The full extractor result is
+    logged to run.json either way; nothing from it reaches the publish.
     """
     out_dir = Path(run_dir) / entry["out_dir"]
     q = multiprocessing.Queue()
@@ -100,10 +102,10 @@ def _extract_one(name, target, entry, run_dir, timeout_s):
         "elapsed_s": elapsed,
         "at": paths.now(),
     })
-    return result, err
+    return err
 
 
-def _identify_one(pb, cfg, model, target, entry, result, run_dir):
+def _identify_one(pb, cfg, model, target, entry, run_dir):
     ai = cfg["ai"]
     limits = cfg["limits"]
     out_dir = Path(run_dir) / entry["out_dir"]
@@ -114,9 +116,9 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
     paths.update_pkg(Path(run_dir) / "context.json", entry["key"], pkg)
     mlog = ai_identify.MessageLog(run_dir, entry["key"])
     identity, warns, stats = ai_identify.run_session(pkg, pb, cfg, model, mlog)
-    extractor_warns = result.get("warnings", []) if isinstance(result, dict) else []
-    merged = [str(w) for w in extractor_warns] + [str(w) for w in warns]
-    side, doc, problems = _publish(pb, target, identity, merged)
+    for w in warns:
+        print(f"  [identify] {entry['key']} note: {w}")
+    side, doc, problems = _publish(pb, target, identity)
     if problems:
         registry.update(run_dir, target, state="error", error="; ".join(problems))
         print(f"  [publish] {entry['key']} FAILED template check: {'; '.join(problems)}")
@@ -126,8 +128,8 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
     shutil.copy(side, pub_dir / side.name)
     registry.update(run_dir, target, state="ok")
     print(
-        f"  [done] {entry['key']} {Path(target).name} -> {identity.get('title') or ''} "
-        f"({identity.get('category')}, {identity.get('confidence')}) "
+        f"  [done] {entry['key']} {Path(target).name} -> {identity['title']} "
+        f"({identity['category']}, {identity['confidence']}) "
         f"pages {stats['pages_read']}/{stats['pages']}, rolls {stats['rolls']}, turns {stats['turns']}"
     )
 
@@ -159,23 +161,21 @@ def cmd_scan(args):
 
     def do_extract(item):
         path, entry = item
-        result, err = _extract_one(args.extractor, path, entry, run_dir, timeout_s)
+        err = _extract_one(args.extractor, path, entry, run_dir, timeout_s)
         if err is not None:
             registry.update(run_dir, path, state="error", error=err)
             print(f"  [extract] {entry['key']} error: {err}")
             return
-        extract_results[path] = result
         print(f"  [extract] {entry['key']} ok: {Path(path).name}")
 
     def do_identify(item):
         path, entry = item
         try:
-            _identify_one(pb, cfg, model, path, entry, extract_results.get(path, {}), run_dir)
+            _identify_one(pb, cfg, model, path, entry, run_dir)
         except Exception as exc:
             registry.update(run_dir, path, state="error", error=repr(exc))
             print(f"  [identify] {entry['key']} FAILED: {exc!r}")
 
-    extract_results = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(do_extract, registry.by_state(run_dir, "")))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -184,7 +184,7 @@ def cmd_scan(args):
     registry.set_status(run_dir, "done")
     counts = {}
     for _, e in registry.all_targets(run_dir):
-        counts[e["state"] or "queued"] = counts.get(e["state"] or "queued", 0) + 1
+        counts[e["state"]] = counts.get(e["state"], 0) + 1
     print("summary: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     return 0
 

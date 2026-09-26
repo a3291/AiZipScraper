@@ -57,11 +57,13 @@ def chat(messages, contract, model, cfg):
 
 
 def _extract_content(payload):
-    choices = payload.get("choices") or []
-    if not choices:
-        return ""
-    message = choices[0].get("message") or {}
-    content = message.get("content")
+    """Pull the reply text out of a chat completion; a response without it is
+    a backend contract violation, not an empty reply."""
+    choices = payload["choices"]
+    message = choices[0]["message"]
+    content = message["content"]
     if isinstance(content, list):
         return "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return content if isinstance(content, str) else ""
+    if not isinstance(content, str):
+        raise RuntimeError(f"backend returned {type(content).__name__} content, expected string")
+    return content

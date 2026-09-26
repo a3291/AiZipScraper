@@ -93,8 +93,10 @@ python main.py scan D:\downloads --workers 4
 4. **识别** — 每目标一场会话。开卷场景：system、context（首页：目录）、
    可选 `add`、chatlog（尾页）、memo。每条原始消息带 session 号
    归档进 `messages.json`；`sessions.json` 记录 session 边界。
-5. **发布** — 用 identity 与 warnings 填模板 `publish.json`，自检通过后
-   写为 `<目标名>.publish.json`，完整拷贝存入 `runs/<run_id>/publishes/`。
+5. **发布** — 用模型产出的 identity 填模板 `publish.json`——publish 是纯
+   内容结论，不带任何域的过程注记（提取记录留 `run.json`，会话注记走
+   控制台）——自检通过后写为 `<目标名>.publish.json`，完整拷贝存入
+   `runs/<run_id>/publishes/`。
    目标终态仅 `ok`（正常）或 `error`（出错）；任一阶段出错即跳过该目标
    后续阶段。
 
@@ -126,7 +128,7 @@ chatlog 文档里保留）。每次滚页开新 session。`max_turns: -1` 不限
 ## 发布格式
 
 `<目标名>.publish.json` 对应模板：identity（title、category、summary、
-tags、language、confidence）加程序填写的 warnings。每份已发布文档同时
+tags、language、confidence），仅此而已。每份已发布文档同时
 拷贝到 `runs/<run_id>/publishes/`。发布过不了模板检查的
 目标记 `error`，不写文件。
 
