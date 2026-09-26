@@ -8,8 +8,8 @@ sentence. File recognition is delegated to context_scanner.
 import os
 from pathlib import Path
 
-from common.paths import read_pkgs, update_pkg
-from extractor import context_scanner
+from paths import read_pkgs, update_pkg
+import context_scanner
 
 
 def _split_sentences(text):
@@ -45,12 +45,12 @@ def paginate(text, page_chars, sentence_max_ratio):
     return pages
 
 
-def write_chatlog(run_dir, key, fold_text, page_chars, sentence_max_ratio):
-    """Append a folded session to runs/<run_id>/chatlog.json, re-page the
+def write_chatlog(run_dir, key, roll_text, page_chars, sentence_max_ratio):
+    """Append a rolled session to runs/<run_id>/chatlog.json, re-page the
     accumulated document and return its pages."""
     p = Path(run_dir) / "chatlog.json"
     pkg = read_pkgs(p)["packages"].setdefault(key, {"sections": [], "pages": []})
-    pkg["sections"].append(fold_text)
+    pkg["sections"].append(roll_text)
     pkg["pages"] = paginate("\n".join(pkg["sections"]), page_chars, sentence_max_ratio)
     update_pkg(p, key, pkg)
     return pkg["pages"]

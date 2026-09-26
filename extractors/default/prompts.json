@@ -12,7 +12,7 @@
     },
     "chatlog": {
       "role": "user",
-      "frontier": "Conversation history is folded into chatlog pages ({chatlog_total} pages so far); request them with read_chatlog. The latest page is below.\n===== chatlog round {roll_no} | context pages read: {pages_read} of {page_total} =====",
+      "frontier": "Conversation history is rolled into chatlog pages ({chatlog_total} pages so far); request them with read_chatlog. The latest page is below.\n===== chatlog roll {roll_no} | context pages read: {pages_read} of {page_total} =====",
       "text": "{chatlog_tail}"
     },
     "chatlog_deliver": {
@@ -22,7 +22,7 @@
     },
     "memo": {
       "role": "user",
-      "frontier": "Your memo persists across sessions and folds; read it with read_memo, replace it whole with write_memo (memo field).\n===== memo =====",
+      "frontier": "Your memo persists across sessions and rolls; read it with read_memo, replace it whole with write_memo (memo field).\n===== memo =====",
       "text": "{memo_text}"
     },
     "memo_deliver": {

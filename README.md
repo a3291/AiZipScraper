@@ -14,16 +14,14 @@ config.json                   run configuration
 scripts/
   cli.py                      scan / backend commands
   ai_identify.py              conversation engine (chatlog-only mode, session archiving)
-  common/                     shared infrastructure
-    paths.py                  layout constants, JSON IO
-    schema.py                 template-led validation
-    backend.py                AI backend access
-    prompt_builder.py          prompts.json loading, {_contract:xxx} injection
-    registry.py               target registry (single source of target state)
-  extractor/                  extraction subprocess domain
-    run_extractor.py          worker: loads <name>/extractor.py, returns extract() result
-    context_scanner.py        file -> text recognition
-    context_builder.py        paged packing (catalog head page, sentence-aligned pages, metadata tail page)
+  paths.py                    layout constants, JSON IO
+  schema.py                   template-led validation
+  backend.py                  AI backend access
+  prompt_builder.py           prompts.json loading, {_contract:xxx} injection
+  registry.py                 target registry (single source of target state)
+  run_extractor.py            worker: loads <name>/extractor.py, returns extract() result
+  context_scanner.py          file -> text recognition
+  context_builder.py          paged packing (catalog head page, sentence-aligned pages, metadata tail page)
 extractors/
   _contract.json              session_actions + chatlog_summary contracts
   default/
@@ -36,11 +34,11 @@ runs/<run_id>/
   registry.json               target states
   run.json                    extractor subprocess records
   context.json                paged context per target
-  chatlog.json                folded chatlog document per target
+  chatlog.json                rolled-up chatlog document per target
   memo.json                   model working notes per target
   sessions.json               session boundaries per target
   messages.json               every raw message with its session number
-  publish.json                copy of each published document
+  publishes/                  complete copies of each <target>.publish.json
 ```
 
 ## Install
@@ -72,9 +70,9 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
 | ai.timeout | 300 | per-request timeout in seconds |
 | ai.probe_timeout | 10 | endpoint probe timeout in seconds (backend check, model auto-resolve) |
 | ai.page_chars | 3000 | page size in characters |
-| ai.remind_at | 32000 | watermark: ask for a summary and fold (remind when capped) |
-| ai.force_publish_at | 60000 | watermark: fold raw messages (force publish when capped) |
-| ai.max_turns | -1 | fold cap; -1 unlimited |
+| ai.remind_at | 32000 | watermark: ask for a summary and roll (remind-to-publish when capped) |
+| ai.force_publish_at | 60000 | watermark: roll raw messages in (force publish when capped) |
+| ai.max_turns | -1 | roll cap; -1 unlimited |
 | ai.estimate_chunk | 4 | chars-per-token estimate when usage is not reported |
 | ai.publish_retries | 3 | re-input chances for a malformed publish after force |
 | limits.extract_timeout_s | 1800 | extractor subprocess timeout |
@@ -85,11 +83,11 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
 
 1. **register** — first level under the path (hidden entries, `_`-prefixed
    names, `runs/`, existing `*.publish.json` skipped); each target becomes
-   `t1..tN` in `registry.json` with state `pending`.
+   `t1..tN` in `registry.json` with an empty state until processed.
 2. **extract** — `extractors/<name>/extractor.py` runs in a child process per
    target; its `extract(in_path, out_dir)` return value decides normality.
    Abnormal (exception, timeout, worker death, non-dict return, zero kept
-   files) marks the target `skipped` with the reason; no conversation runs.
+   files) marks the target `error` with the reason; no conversation runs.
    Every run is logged to `run.json` with `ok`, the returned `result` or the
    `error` reason, and elapsed time.
 3. **context** — files under the target's `extracted/<tN>/` are recognized by
@@ -101,8 +99,8 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
    session number; `sessions.json` records session boundaries.
 5. **publish** — the template `publish.json` is filled with identity and
    warnings, checked against itself, and written as `<target>.publish.json`;
-   a copy goes to `runs/<run_id>/publish.json`. Target states: pending /
-   extracted / published / failed / skipped.
+   a complete copy goes to `runs/<run_id>/publishes/`. A target ends as
+   `ok` or `error`; an error at any stage skips its remaining stages.
 
 ## Conversation engine
 
@@ -115,18 +113,18 @@ The model drives with one JSON action per turn
 - `read_chatlog` — request a chatlog page; chatlog pages stay rereadable.
 - `read_memo` / `write_memo` — read the memo; replace it whole with the
   `memo` field. The memo is per target at `runs/<run_id>/memo.json`, persists
-  across sessions and folds, and is capped at `page_chars`; non-string or
+  across sessions and rolls, and is capped at `page_chars`; non-string or
   oversized writes are refused with `memo_reject`.
 - `publish` — final identity. A malformed publish before any force gives up;
   after force it gets `publish_retries` re-input chances.
 - `help` — protocol recap, any time.
 
-Folding: at `remind_at` the engine asks the model (side call,
+Rolling: at `remind_at` the engine asks the model (side call,
 `{_contract:chatlog_summary}`) for a summary, checks it against the
-`chatlog_summary` contract, and folds the session as a digest; at
-`force_publish_at` the session's raw messages are folded without a
+`chatlog_summary` contract, and rolls the session into the chatlog document;
+at `force_publish_at` the session's raw messages roll in without a
 summary (soft boundary — the messages survive in the chatlog document). Each
-fold opens a new session. `max_turns: -1` folds without limit; when the cap
+roll opens a new session. `max_turns: -1` rolls without limit; when the cap
 is reached the watermarks fall back to their prompt-publish /
 force-publish meanings.
 
@@ -139,14 +137,14 @@ content (role persona, payload slots). Contracts live in
 
 `<target>.publish.json` mirrors the template: identity (title, category,
 summary, tags, language, confidence) plus program-filled warnings. Each
-published document is also copied to `runs/<run_id>/publish.json`. A target
-whose publish fails the template check is marked `failed` and no file is
+published document is also copied under `runs/<run_id>/publishes/`. A target
+whose publish fails the template check is marked `error` and no file is
 written.
 
 ## Default extractor
 
 Accepts only `.zip` / `.7z` archives; folders and plain files are refused
-(and their targets end up `skipped`, no conversation). Members are sampled
+(and their targets end up `error`, no conversation). Members are sampled
 under its own caps (`extractors/default/config.json`): per-file 256 KiB,
 total 4 MiB, 8 files, 30k listing entries. Encrypted archives try the
 password candidates in `extractors/default/password.json`. Quantity policy

@@ -6,8 +6,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from common import prompt_builder, schema
-from extractor import context_builder
+import context_builder
+import prompt_builder
+import schema
 
 ROOT = Path(__file__).resolve().parent.parent
 FAILS = []

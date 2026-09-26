@@ -5,8 +5,7 @@ import threading
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-SCRIPTS = ROOT / "scripts"
+ROOT = Path(__file__).resolve().parent.parent
 EXTRACTORS = ROOT / "extractors"
 RUNS_DIR = ROOT / "runs"
 

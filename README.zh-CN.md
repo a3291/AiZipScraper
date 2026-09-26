@@ -12,16 +12,14 @@ config.json                   运行配置
 scripts/
   cli.py                      scan / backend 命令
   ai_identify.py              会话引擎（chatlog 唯一模式、分 session 归档）
-  common/                     两侧共享基建
-    paths.py                  布局常量与 JSON 读写
-    schema.py                 模板主导验证
-    backend.py                AI 后端访问
-    prompt_builder.py         prompts.json 加载、{_contract:xxx} 注入
-    registry.py               目标注册表（目标状态的唯一事实）
-  extractor/                  提取子进程域
-    run_extractor.py          工人：加载 <名>/extractor.py，回传 extract() 返回值
-    context_scanner.py        文件 → 文本识别
-    context_builder.py        分页打包（目录首页、句对齐内容页、元数据尾页）
+  paths.py                    布局常量与 JSON 读写
+  schema.py                   模板主导验证
+  backend.py                  AI 后端访问
+  prompt_builder.py           prompts.json 加载、{_contract:xxx} 注入
+  registry.py                 目标注册表（目标状态的唯一事实）
+  run_extractor.py            工人：加载 <名>/extractor.py，回传 extract() 返回值
+  context_scanner.py          文件 → 文本识别
+  context_builder.py          分页打包（目录首页、句对齐内容页、元数据尾页）
 extractors/
   _contract.json              session_actions + chatlog_summary 两份契约
   default/
@@ -34,11 +32,11 @@ runs/<run_id>/
   registry.json               目标状态
   run.json                    提取子进程运行记录
   context.json                每目标的分页上下文
-  chatlog.json                每目标折页而成的 chatlog 文档
+  chatlog.json                每目标滚页而成的 chatlog 文档
   memo.json                   每目标的模型工作笔记
   sessions.json               每目标的 session 边界
   messages.json               逐条原始消息，带 session 号
-  publish.json                每份已发布文档的副本
+  publishes/                  每份 <目标>.publish.json 的完整拷贝
 ```
 
 ## 安装
@@ -69,9 +67,9 @@ python main.py scan D:\downloads --workers 4
 | ai.timeout | 300 | 单次请求超时秒数 |
 | ai.probe_timeout | 10 | 端点探测超时秒数（backend 校验、模型自动解析） |
 | ai.page_chars | 3000 | 每页字符数 |
-| ai.remind_at | 32000 | 水位线：请求总结并折页（到顶则提醒发布） |
-| ai.force_publish_at | 60000 | 水位线：折入原始消息（到顶则强制发布） |
-| ai.max_turns | -1 | 折页上限；-1 不限 |
+| ai.remind_at | 32000 | 水位线：请求总结并滚页（到顶则提醒发布） |
+| ai.force_publish_at | 60000 | 水位线：滚入原始消息（到顶则强制发布） |
+| ai.max_turns | -1 | 滚页上限；-1 不限 |
 | ai.estimate_chunk | 4 | 后端不回报用量时按"字符÷该值"估算 token |
 | ai.publish_retries | 3 | 强制后格式错误 publish 的重新输入机会数 |
 | limits.extract_timeout_s | 1800 | 提取子进程超时 |
@@ -82,10 +80,10 @@ python main.py scan D:\downloads --workers 4
 
 1. **登记** — 路径下第一层（跳过隐藏项、`_` 开头、`runs/`、已存在的
    `*.publish.json`）；每个目标在 `registry.json` 里成为 `t1..tN`，状态
-   `pending`。
+   留空，处理到哪步填哪步。
 2. **提取** — `extractors/<名>/extractor.py` 在子进程中按目标运行；
    `extract(in_path, out_dir)` 的返回值判定正常与否。不正常（异常、超时、
-   进程死亡、返回非 dict、零保留文件）把目标记为 `skipped` 并带原因，
+   进程死亡、返回非 dict、零保留文件）把目标记为 `error` 并带原因，
    不进会话。每次运行记入 `run.json`：`ok`、返回的 `result` 或 `error`
    原因、耗时。
 3. **上下文** — 目标 `extracted/<tN>/` 下的文件经 `context_scanner` 识别，
@@ -94,8 +92,9 @@ python main.py scan D:\downloads --workers 4
    可选 `add`、chatlog（尾页）、memo。每条原始消息带 session 号
    归档进 `messages.json`；`sessions.json` 记录 session 边界。
 5. **发布** — 用 identity 与 warnings 填模板 `publish.json`，自检通过后
-   写为 `<目标名>.publish.json`，副本存入 `runs/<run_id>/publish.json`。
-   目标状态：pending / extracted / published / failed / skipped。
+   写为 `<目标名>.publish.json`，完整拷贝存入 `runs/<run_id>/publishes/`。
+   目标终态仅 `ok`（正常）或 `error`（出错）；任一阶段出错即跳过该目标
+   后续阶段。
 
 ## 会话引擎
 
@@ -105,17 +104,17 @@ python main.py scan D:\downloads --workers 4
   已读页或越界请求停滞进入发布。
 - `read_chatlog` — 请求 chatlog 页；chatlog 页可重复读。
 - `read_memo` / `write_memo` — 读笔记；用 `memo` 字段整文覆盖。笔记按目标
-  存于 `runs/<run_id>/memo.json`，跨 session 与折页保留，上限 `page_chars`；
+  存于 `runs/<run_id>/memo.json`，跨 session 与滚页保留，上限 `page_chars`；
   非字符串或超长写入以 `memo_reject` 拒绝。
 - `publish` — 最终 identity。未进入强制状态时格式错误的 publish 直接
   放弃；强制后给 `publish_retries` 次重新输入机会。
 - `help` — 协议复述，随时可调。
 
-折页：到 `remind_at` 引擎向模型侧呼叫（`{_contract:chatlog_summary}`）
-要总结，过 `chatlog_summary` 契约检查后以 digest 折页；到
-`force_publish_at` 不做总结，把本 session
-原始消息折入（软边界——消息在 chatlog 文档里保留）。每次折页开新
-session。`max_turns: -1` 不限次折页；到顶后水位线回落为提醒发布 /
+滚页：到 `remind_at` 引擎向模型侧呼叫（`{_contract:chatlog_summary}`）
+要总结，过 `chatlog_summary` 契约检查后滚入 chatlog 文档；到
+`force_publish_at` 不做总结，本 session 原始消息滚入（软边界——消息在
+chatlog 文档里保留）。每次滚页开新 session。`max_turns: -1` 不限次滚页；
+到顶后水位线回落为提醒发布 /
 强制发布的原意。
 
 提示词条目为 `{role, frontier, text}`：frontier 是固定骨架（契约引用、
@@ -126,12 +125,12 @@ session。`max_turns: -1` 不限次折页；到顶后水位线回落为提醒发
 
 `<目标名>.publish.json` 对应模板：identity（title、category、summary、
 tags、language、confidence）加程序填写的 warnings。每份已发布文档同时
-拷贝到 `runs/<run_id>/publish.json`。发布过不了模板检查的
-目标记 `failed`，不写文件。
+拷贝到 `runs/<run_id>/publishes/`。发布过不了模板检查的
+目标记 `error`，不写文件。
 
 ## default 提取器
 
-只收 `.zip` / `.7z` 压缩包；文件夹与普通文件拒绝（其目标记 `skipped`，
+只收 `.zip` / `.7z` 压缩包；文件夹与普通文件拒绝（其目标记 `error`，
 不进会话）。成员按自有上限抽样（`extractors/default/config.json`）：
 单文件 256 KiB、总量 4 MiB、8 个文件、清单 3 万条。加密压缩包尝试
 `extractors/default/password.json` 的密码候选。量的策略归提取器，

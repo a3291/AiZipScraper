@@ -1,18 +1,19 @@
 """Conversation engine: paged evidence in, identity out.
 
-chatlog is the only mode: remind_at asks the model for a summary and folds the
-history into a digest; force_publish_at folds without a summary (the session's
-raw messages are filed instead — the soft boundary keeps the messages);
-max_turns caps folds (-1 unlimited; when the cap is reached the watermarks
-fall back to their prompt-publish / force-publish meanings). Every raw message
-is archived with its session number; a fold opens a new session.
+chatlog is the only mode: remind_at asks the model for a summary and rolls the
+history into the chatlog document; force_publish_at rolls without a summary
+(the session's raw messages are filed instead — the soft boundary keeps the
+messages); max_turns caps rolls (-1 unlimited; when the cap is reached the
+watermarks fall back to their prompt-publish / force-publish meanings). Every
+raw message is archived with its session number; a roll opens a new session.
 """
 import json
 from pathlib import Path
 
-from common import backend, schema
-from common.paths import read_pkgs, update_pkg
-from extractor import context_builder
+import backend
+import context_builder
+import schema
+from paths import read_pkgs, update_pkg
 
 REQUIRED_AI_KEYS = {
     "base_url", "model", "api_key", "temperature", "timeout", "probe_timeout",
@@ -130,8 +131,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
 
     system = pb.get("system")
     first = pb.get("first", head=pages[0]["text"])
-    add = pb.get("add") if pb.has("add") else None
-    open_keys = ["system", "first"] + (["add"] if add else []) + ["chatlog", "memo"]
+    add = pb.prompts.get("add") if "add" in pb.prompts else None
 
     def chatlog_msg():
         read = ", ".join(str(n) for n in sorted(read_pages)) or "none"
@@ -145,49 +145,53 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         )
 
     def rebuild():
-        msgs = [system, first]
+        pairs = [("system", system), ("first", first)]
         if add:
-            msgs.append(add)
-        msgs.append(chatlog_msg())
-        msgs.append(memo_msg())
-        return msgs
+            pairs.append(("add", add))
+        pairs.append(("chatlog", chatlog_msg()))
+        pairs.append(("memo", memo_msg()))
+        return pairs
 
-    messages = rebuild()
-    mlog.new_session()
-    for m, key in zip(messages, open_keys):
-        mlog.append(m["role"], m["content"], key)
+    def open_session():
+        nonlocal messages
+        pairs = rebuild()
+        messages = [m for _, m in pairs]
+        mlog.new_session()
+        for key, m in pairs:
+            mlog.append(m["role"], m["content"], key)
 
-    def say(msg, key):
+    messages = []
+    open_session()
+
+    def say(key, **tokens):
+        msg = pb.get(key, **tokens)
         messages.append(msg)
         mlog.append(msg["role"], msg["content"], key)
 
-    def fold(with_digest, digest_text=None):
-        """Fold the current session into the chatlog document (built and
+    def roll(with_summary, summary_text=None):
+        """Roll the current session into the chatlog document (built and
         persisted by context_builder as runs/<run_id>/chatlog.json), then
-        reopen with a new session. With a digest the summary is filed; without
-        one the raw session messages are filed so the model can still reach
-        them through chatlog pages."""
-        nonlocal rolls, usage_tokens, reminded, summary_tried, messages
+        reopen with a new session. With a summary the summary is filed;
+        without one the raw session messages are filed so the model can still
+        reach them through chatlog pages."""
+        nonlocal rolls, usage_tokens, reminded, summary_tried
         nonlocal chatlog_pages
         rolls += 1
         stats["rolls"] = rolls
-        if with_digest and digest_text:
-            body = digest_text
-            kind = "digest"
+        if with_summary and summary_text:
+            body = summary_text
+            kind = "summary"
         else:
             body = "\n".join(f"{m['role']}: {m['content']}" for m in messages)
-            kind = "raw session"
+            kind = "raw"
         chatlog_pages = context_builder.write_chatlog(
             mlog.run_dir, mlog.key, f"===== {kind} {rolls} =====\n{body}",
             ai["page_chars"], cfg["limits"]["sentence_max_ratio"],
         )
-        messages = rebuild()
         usage_tokens = 0
         reminded = False
         summary_tried = False
-        mlog.new_session()
-        for m, key in zip(messages, open_keys):
-            mlog.append(m["role"], m["content"], key)
+        open_session()
 
     def ask_summary():
         m = pb.get("chatlog_summarize")
@@ -202,7 +206,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         obj = _extract_json(r["content"])
         problems = schema.check(
             obj if isinstance(obj, dict) else {},
-            pb.contract("chatlog_summary")["template"],
+            pb.contracts["chatlog_summary"]["template"],
         )
         if problems:
             warned.append("chatlog summary failed contract: " + "; ".join(problems))
@@ -226,27 +230,27 @@ def run_session(context_pkg, pb, cfg, model, mlog):
     def stall():
         nonlocal forced
         forced = True
-        say(pb.get("stall_to_publish"), "stall_to_publish")
+        say("stall_to_publish")
 
     while True:
         can_roll = max_turns < 0 or rolls < max_turns
         if usage_tokens >= ai["force_publish_at"]:
             if can_roll:
-                fold(with_digest=False)
+                roll(with_summary=False)
                 continue
             if not forced:
                 forced = True
-                say(pb.get("force_publish"), "force_publish")
+                say("force_publish")
         elif usage_tokens >= ai["remind_at"]:
             if can_roll and not summary_tried:
                 summary_tried = True
-                digest = ask_summary()
-                if digest is not None:
-                    fold(with_digest=True, digest_text=digest)
+                summary = ask_summary()
+                if summary is not None:
+                    roll(with_summary=True, summary_text=summary)
                     continue
             elif not can_roll and not reminded:
                 reminded = True
-                say(pb.get("remind"), "remind")
+                say("remind")
 
         stats["turns"] += 1
         r = backend.chat(messages, rf, model, ai)
@@ -258,12 +262,12 @@ def run_session(context_pkg, pb, cfg, model, mlog):
 
         obj = _extract_json(reply)
         if obj is None or not isinstance(obj, dict):
-            say(pb.get("bad_json_retry"), "bad_json_retry")
+            say("bad_json_retry")
             continue
 
         action = obj.get("action")
         if action == "help":
-            say(pb.get("help", page_total=page_total), "help")
+            say("help", page_total=page_total)
             continue
 
         if action == "publish":
@@ -272,11 +276,11 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             problems = schema.check(ident if isinstance(ident, dict) else {}, tmpl)
             if problems:
                 if forced and retry_left > 0:
-                    say(pb.get(
+                    say(
                         "publish_retry",
                         missing="; ".join(p.split(".", 1)[-1] for p in problems),
                         attempt_left=retry_left,
-                    ), "publish_retry")
+                    )
                     retry_left -= 1
                     continue
                 return bail("publish output malformed")
@@ -284,26 +288,20 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             return ident, warned, stats
 
         if action == "read_memo":
-            say(pb.get(
-                "memo_deliver", memo_text=memo_text or "(memo is empty)",
-            ), "memo_deliver")
+            say("memo_deliver", memo_text=memo_text or "(memo is empty)")
             continue
 
         if action == "write_memo":
             incoming = obj.get("memo")
             if not isinstance(incoming, str):
-                say(pb.get(
-                    "memo_reject", why="memo field must be a string",
-                ), "memo_reject")
+                say("memo_reject", why="memo field must be a string")
                 continue
             if len(incoming) > memo_limit:
-                say(pb.get(
-                    "memo_reject", why=f"memo over {memo_limit} chars",
-                ), "memo_reject")
+                say("memo_reject", why=f"memo over {memo_limit} chars")
                 continue
             memo_text = incoming
             _save_memo(mlog.run_dir, mlog.key, memo_text)
-            say(pb.get("memo_saved", chars=len(memo_text)), "memo_saved")
+            say("memo_saved", chars=len(memo_text))
             continue
 
         if action == "read_chatlog":
@@ -316,10 +314,10 @@ def run_session(context_pkg, pb, cfg, model, mlog):
                 stall()
                 continue
             body = chatlog_pages[cpage - 1]
-            say(pb.get(
+            say(
                 "chatlog_deliver", page=cpage,
                 chatlog_total=len(chatlog_pages), page_text=body,
-            ), "chatlog_deliver")
+            )
             continue
 
         page = obj.get("page")
@@ -335,5 +333,4 @@ def run_session(context_pkg, pb, cfg, model, mlog):
             continue
         read_pages.add(page)
         body = pages[page - 1]["text"]
-        say(pb.get("page_deliver", page=page, page_total=page_total, page_text=body),
-            "page_deliver")
+        say("page_deliver", page=page, page_total=page_total, page_text=body)

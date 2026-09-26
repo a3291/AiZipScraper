@@ -5,7 +5,7 @@ import threading
 import time
 from pathlib import Path
 
-from common.paths import append_json_list, now, read_json, write_json
+from paths import append_json_list, now, read_json, write_json
 
 _LOCK = threading.Lock()
 
@@ -50,7 +50,7 @@ def register(run_dir, targets):
             key = f"t{i}"
             reg["targets"][path] = {
                 "key": key,
-                "state": "pending",
+                "state": "",
                 "out_dir": f"extracted/{key}",
                 "error": "",
             }

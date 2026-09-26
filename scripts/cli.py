@@ -3,21 +3,28 @@
 scan is one pipeline: register targets (non-recursive) under a path, extract
 them in child processes, build paged context, run one identify conversation per
 target, then fill the publish template, check it against the template and write
-<target>.publish.json next to the target; a copy of each published document is
-kept in runs/<run_id>/publish.json. The registry is the single source of target
-state.
+<target>.publish.json next to the target; a complete copy of each published
+document is kept under runs/<run_id>/publishes/. The registry is the single
+source of target state (ok / error; an error skips the target's remaining
+stages).
 """
 import argparse
 import copy
 import multiprocessing
+import shutil
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import ai_identify
-from common import backend, paths, prompt_builder, registry, schema
-from extractor import context_builder, run_extractor
+import backend
+import context_builder
+import paths
+import prompt_builder
+import registry
+import run_extractor
+import schema
 
 
 def _find_targets(path):
@@ -111,11 +118,13 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
     merged = [str(w) for w in extractor_warns] + [str(w) for w in warns]
     side, doc, problems = _publish(pb, target, identity, merged)
     if problems:
-        registry.update(run_dir, target, state="failed", error="; ".join(problems))
+        registry.update(run_dir, target, state="error", error="; ".join(problems))
         print(f"  [publish] {entry['key']} FAILED template check: {'; '.join(problems)}")
         return
-    paths.update_pkg(Path(run_dir) / "publish.json", entry["key"], doc)
-    registry.update(run_dir, target, state="published")
+    pub_dir = Path(run_dir) / "publishes"
+    pub_dir.mkdir(exist_ok=True)
+    shutil.copy(side, pub_dir / side.name)
+    registry.update(run_dir, target, state="ok")
     title = identity.get("title") or "(no title)"
     print(
         f"  [done] {entry['key']} {Path(target).name} -> {title} "
@@ -153,10 +162,9 @@ def cmd_scan(args):
         path, entry = item
         result, err = _extract_one(args.extractor, path, entry, run_dir, timeout_s)
         if err is not None:
-            registry.update(run_dir, path, state="skipped", error=err)
-            print(f"  [extract] {entry['key']} skipped: {err}")
+            registry.update(run_dir, path, state="error", error=err)
+            print(f"  [extract] {entry['key']} error: {err}")
             return
-        registry.update(run_dir, path, state="extracted")
         extract_results[path] = result
         print(f"  [extract] {entry['key']} ok: {Path(path).name}")
 
@@ -165,19 +173,19 @@ def cmd_scan(args):
         try:
             _identify_one(pb, cfg, model, path, entry, extract_results.get(path, {}), run_dir)
         except Exception as exc:
-            registry.update(run_dir, path, state="failed", error=repr(exc))
+            registry.update(run_dir, path, state="error", error=repr(exc))
             print(f"  [identify] {entry['key']} FAILED: {exc!r}")
 
     extract_results = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        list(pool.map(do_extract, registry.by_state(run_dir, "pending")))
+        list(pool.map(do_extract, registry.by_state(run_dir, "")))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        list(pool.map(do_identify, registry.by_state(run_dir, "extracted")))
+        list(pool.map(do_identify, registry.by_state(run_dir, "")))
 
     registry.set_status(run_dir, "done")
     counts = {}
     for _, e in registry.all_targets(run_dir):
-        counts[e["state"]] = counts.get(e["state"], 0) + 1
+        counts[e["state"] or "queued"] = counts.get(e["state"] or "queued", 0) + 1
     print("summary: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     return 0
 

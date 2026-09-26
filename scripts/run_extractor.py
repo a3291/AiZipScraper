@@ -6,13 +6,13 @@ from the returned dict."""
 import importlib.util
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent.parent
+from paths import EXTRACTORS
 
 
 def load_extractor(name):
     if not name or name.startswith("_") or "/" in name or "\\" in name or name in (".", ".."):
         raise ValueError(f"bad extractor name: {name!r}")
-    path = ROOT / "extractors" / name / "extractor.py"
+    path = EXTRACTORS / name / "extractor.py"
     if not path.is_file():
         raise FileNotFoundError(f"extractor not found: {path}")
     spec = importlib.util.spec_from_file_location(f"extractors.{name}.extractor", path)

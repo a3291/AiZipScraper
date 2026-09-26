@@ -11,7 +11,7 @@ replaced per send via get().
 import json
 from pathlib import Path
 
-from common.schema import derive
+from schema import derive
 
 _TOKEN = "{_contract:"
 
@@ -22,14 +22,8 @@ class Builder:
         self.contracts = contracts
         self.publish_template = publish
 
-    def has(self, key):
-        return key in self.prompts
-
-    def contract(self, name):
-        return self.contracts[name]
-
     def response_format(self, name):
-        c = self.contract(name)
+        c = self.contracts[name]
         return derive(name, c["template"], c.get("enums"))
 
     def get(self, key, **tokens):
