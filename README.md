@@ -13,6 +13,23 @@ This project was built with the help of a large language model, so things can
 be a bit messy — I have fixed what I could. My code is far from masterful; the
 goal throughout has simply been a small, working tool.
 
+The core ideas behind it:
+
+1. Concurrent registration of targets, waiting to be scraped
+2. Swappable scrapers (extractors)
+3. After scraping, the text is packed into a context — a set of pages read
+   through a plain-text (JSON) contract where the AI turns pages; the goal is
+   to keep conversations within a bounded context
+4. An auto-summary mechanism: a remind threshold, plus a chatlog kept like a
+   paged context the AI can flip through manually
+5. A memo, in case the AI wants to take notes along the way
+6. The final artifact comes back through a JSON contract
+7. messages.json keeps the full conversation in the run_id, and the scraping
+   result has a copy in there too
+
+Because extractors are swappable, the tool could grow into other little
+script pipelines later.
+
 One run = one target, six steps, serial inside the run. Errors stop that run
 only — the pool moves on.
 
