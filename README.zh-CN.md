@@ -61,11 +61,11 @@ python main.py scan D:\downloads --workers 4
 |---|---|---|
 | concurrency | 4 | 提取池与识别池的并行 worker 数 |
 | ai.base_url | http://localhost:1234/v1 | OpenAI 兼容端点（必填） |
-| ai.model | （空） | 模型名；留空取端点列出的第一个模型 |
+| ai.model | — | 模型名；必填非空 |
 | ai.api_key | lm-studio | 端点需要时带的 bearer token |
 | ai.temperature | 0.7 | 采样温度 |
 | ai.timeout | 300 | 单次请求超时秒数 |
-| ai.probe_timeout | 10 | 端点探测超时秒数（backend 校验、模型自动解析） |
+| ai.probe_timeout | 10 | 端点探测超时秒数（backend 校验） |
 | ai.page_chars | 3000 | 每页字符数 |
 | ai.remind_at | 32000 | 水位线：请求总结并滚页（到顶则提醒发布） |
 | ai.force_publish_at | 60000 | 水位线：滚入原始消息（到顶则强制发布） |
@@ -82,12 +82,14 @@ python main.py scan D:\downloads --workers 4
    `*.publish.json`）；每个目标在 `registry.json` 里成为 `t1..tN`，状态
    留空，处理到哪步填哪步。
 2. **提取** — `extractors/<名>/extractor.py` 在子进程中按目标运行；
-   `extract(in_path, out_dir)` 的返回值判定正常与否。不正常（异常、超时、
+   `extract(in_path, out_dir)` 的返回值判定正常与否。提取器名不得以 `_`
+   开头或含路径分隔符。不正常（异常、超时、
    进程死亡、返回非 dict、零保留文件）把目标记为 `error` 并带原因，
    不进会话。每次运行记入 `run.json`：`ok`、返回的 `result` 或 `error`
    原因、耗时。
 3. **上下文** — 目标 `extracted/<tN>/` 下的文件经 `context_scanner` 识别，
    打成分页：目录首页、内容页、元数据尾页，归档为 `context.json`。
+   `_` 开头的名字跳过。
 4. **识别** — 每目标一场会话。开卷场景：system、context（首页：目录）、
    可选 `add`、chatlog（尾页）、memo。每条原始消息带 session 号
    归档进 `messages.json`；`sessions.json` 记录 session 边界。
@@ -106,8 +108,8 @@ python main.py scan D:\downloads --workers 4
 - `read_memo` / `write_memo` — 读笔记；用 `memo` 字段整文覆盖。笔记按目标
   存于 `runs/<run_id>/memo.json`，跨 session 与滚页保留，上限 `page_chars`；
   非字符串或超长写入以 `memo_reject` 拒绝。
-- `publish` — 最终 identity。未进入强制状态时格式错误的 publish 直接
-  放弃；强制后给 `publish_retries` 次重新输入机会。
+- `publish` — 最终 identity。未进入强制状态时格式错误的 publish 直接放弃
+  （目标记 `error`，不写文件）；强制后给 `publish_retries` 次重新输入机会。
 - `help` — 协议复述，随时可调。
 
 滚页：到 `remind_at` 引擎向模型侧呼叫（`{_contract:chatlog_summary}`）

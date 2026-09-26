@@ -64,11 +64,11 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
 |---|---|---|
 | concurrency | 4 | parallel workers for extract and identify pools |
 | ai.base_url | http://localhost:1234/v1 | OpenAI-compatible endpoint (required) |
-| ai.model | (empty) | model name; empty takes the first model the endpoint lists |
+| ai.model | — | model name; required, non-empty |
 | ai.api_key | lm-studio | bearer token when the endpoint asks for one |
 | ai.temperature | 0.7 | sampling temperature |
 | ai.timeout | 300 | per-request timeout in seconds |
-| ai.probe_timeout | 10 | endpoint probe timeout in seconds (backend check, model auto-resolve) |
+| ai.probe_timeout | 10 | endpoint probe timeout in seconds (backend check) |
 | ai.page_chars | 3000 | page size in characters |
 | ai.remind_at | 32000 | watermark: ask for a summary and roll (remind-to-publish when capped) |
 | ai.force_publish_at | 60000 | watermark: roll raw messages in (force publish when capped) |
@@ -86,6 +86,7 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
    `t1..tN` in `registry.json` with an empty state until processed.
 2. **extract** — `extractors/<name>/extractor.py` runs in a child process per
    target; its `extract(in_path, out_dir)` return value decides normality.
+   Extractor names must not start with `_` or contain path separators.
    Abnormal (exception, timeout, worker death, non-dict return, zero kept
    files) marks the target `error` with the reason; no conversation runs.
    Every run is logged to `run.json` with `ok`, the returned `result` or the
@@ -93,6 +94,7 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
 3. **context** — files under the target's `extracted/<tN>/` are recognized by
    `context_scanner` and packed into pages: a catalog head page, content
    pages, and a metadata tail page; archived as `context.json`.
+   `_`-prefixed names are skipped.
 4. **identify** — one conversation per target. Opening scene:
    system, context (head page: the catalog), optional `add`, chatlog (tail
    page), memo. Every raw message is archived to `messages.json` with its
@@ -115,8 +117,9 @@ The model drives with one JSON action per turn
   `memo` field. The memo is per target at `runs/<run_id>/memo.json`, persists
   across sessions and rolls, and is capped at `page_chars`; non-string or
   oversized writes are refused with `memo_reject`.
-- `publish` — final identity. A malformed publish before any force gives up;
-  after force it gets `publish_retries` re-input chances.
+- `publish` — final identity. A malformed publish before any force aborts the
+  target as `error` (no file written); after force it gets `publish_retries`
+  re-input chances.
 - `help` — protocol recap, any time.
 
 Rolling: at `remind_at` the engine asks the model (side call,

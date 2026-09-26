@@ -20,13 +20,6 @@ REQUIRED_AI_KEYS = {
     "page_chars", "remind_at", "force_publish_at", "max_turns",
     "estimate_chunk", "publish_retries",
 }
-REQUIRED_PROMPT_KEYS = {
-    "system", "first", "chatlog", "chatlog_deliver", "help", "remind",
-    "force_publish", "bad_json_retry", "publish_retry",
-    "stall_to_publish", "page_deliver", "chatlog_summarize",
-    "chatlog_summarize_reply", "memo", "memo_deliver", "memo_saved",
-    "memo_reject",
-}
 
 
 def load_config(path=None):
@@ -36,8 +29,12 @@ def load_config(path=None):
     missing = REQUIRED_AI_KEYS - set(ai)
     if missing:
         raise ValueError(f"config.json missing ai keys: {sorted(missing)}")
-    if not isinstance(ai.get("base_url"), str) or not ai["base_url"].strip():
-        raise ValueError("config.json ai.base_url must be a non-empty string")
+    for key in ("base_url", "model"):
+        if not isinstance(ai.get(key), str) or not ai[key].strip():
+            raise ValueError(f"config.json ai.{key} must be a non-empty string")
+    conc = cfg.get("concurrency")
+    if isinstance(conc, bool) or not isinstance(conc, int) or conc < 1:
+        raise ValueError("config.json concurrency must be an integer >= 1")
     if not isinstance(cfg.get("limits"), dict):
         raise ValueError("config.json: limits section missing")
     return cfg
@@ -92,9 +89,6 @@ def _extract_json(text):
 
 def run_session(context_pkg, pb, cfg, model, mlog):
     """Drive one identify conversation. Returns (identity, warnings, stats)."""
-    missing = REQUIRED_PROMPT_KEYS - set(pb.prompts)
-    if missing:
-        raise ValueError(f"prompts.json missing keys: {sorted(missing)}")
     ai = cfg["ai"]
     pages = context_pkg["pages"]
     page_total = len(pages)
@@ -219,13 +213,8 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         return text.strip()
 
     def bail(reason):
-        warned.append(f"gave up: {reason}")
-        stats["pages_read"] = len(read_pages)
-        identity = {
-            "title": "", "category": "unknown", "summary": "",
-            "tags": [], "language": [], "confidence": 0.0,
-        }
-        return identity, warned, stats
+        """A give-up is an error, not a degraded result: abort the target."""
+        raise RuntimeError(f"gave up: {reason}")
 
     def stall():
         nonlocal forced

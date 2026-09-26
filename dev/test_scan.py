@@ -178,15 +178,18 @@ def test_publish_retry():
 
 
 def test_publish_unforced_bails():
-    """A malformed publish before any force gives up at once."""
+    """A malformed publish before any force gives up at once: the target is
+    an error and no sidecar is written."""
     bad = json.dumps({"action": "publish", "page": None, "identity": {"title": "x"}})
     code, targets, runs_dir = run_scan([bad])
     reg, msgs, ses, run_log, ctx = load_run(runs_dir)
     keys = [m.get("prompt_key") for m in msgs["packages"]["t1"]]
     ok("publish_retry" not in keys, "unforced bail: no retry prompt")
-    side = read_sidecar(targets / "pack.zip")
-    ok(side["identity"]["category"] == "unknown", "unforced bail: degraded identity")
-    ok(any("gave up" in w for w in side["warnings"]), "unforced bail: reason in warnings")
+    entry = reg["targets"][str(targets / "pack.zip")]
+    ok(entry["state"] == "error", "unforced bail: error state")
+    ok("gave up" in entry["error"], "unforced bail: reason in error")
+    ok(not (targets / "pack.zip.publish.json").exists(),
+        "unforced bail: no sidecar")
     cleanup(runs_dir, targets)
 
 

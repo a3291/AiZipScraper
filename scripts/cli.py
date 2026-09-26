@@ -125,9 +125,8 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
     pub_dir.mkdir(exist_ok=True)
     shutil.copy(side, pub_dir / side.name)
     registry.update(run_dir, target, state="ok")
-    title = identity.get("title") or "(no title)"
     print(
-        f"  [done] {entry['key']} {Path(target).name} -> {title} "
+        f"  [done] {entry['key']} {Path(target).name} -> {identity.get('title') or ''} "
         f"({identity.get('category')}, {identity.get('confidence')}) "
         f"pages {stats['pages_read']}/{stats['pages']}, rolls {stats['rolls']}, turns {stats['turns']}"
     )
@@ -135,11 +134,11 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
 
 def cmd_scan(args):
     cfg = ai_identify.load_config(args.config)
-    try:
-        model = backend.resolve_model(cfg["ai"], cfg["ai"]["probe_timeout"])
-    except Exception as exc:
-        print(f"FAIL backend: {exc}")
+    ai_cfg = cfg["ai"]
+    if not backend.endpoint_available(ai_cfg, ai_cfg["probe_timeout"]):
+        print(f"FAIL backend: {backend.endpoint(ai_cfg)} unreachable")
         return 1
+    model = ai_cfg["model"]
     ex_dir = paths.EXTRACTORS / args.extractor
     pb = prompt_builder.load(
         paths.EXTRACTORS / "_contract.json",
@@ -155,7 +154,7 @@ def cmd_scan(args):
     registry.register(run_dir, targets)
     print(f"run {run_id}: {len(targets)} targets, extractor={args.extractor}, model={model}")
 
-    workers = args.workers or int(cfg.get("concurrency", 2))
+    workers = args.workers or cfg["concurrency"]
     timeout_s = int(cfg["limits"]["extract_timeout_s"])
 
     def do_extract(item):
@@ -197,7 +196,7 @@ def cmd_backend(args):
     if not backend.endpoint_available(ai, probe):
         print(f"FAIL: {backend.endpoint(ai)} unreachable")
         return 1
-    model = backend.resolve_model(ai, probe)
+    model = ai["model"]
     contract = {
         "name": "ping",
         "strict": True,

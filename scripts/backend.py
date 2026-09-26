@@ -29,17 +29,6 @@ def endpoint_available(cfg, timeout):
         return False
 
 
-def resolve_model(cfg, timeout):
-    model = cfg.get("model", "")
-    if model:
-        return model
-    data = _get(cfg, "/models", timeout)
-    models = data.get("data") or []
-    if not models:
-        raise RuntimeError(f"{endpoint(cfg)} lists no models; set ai.model in config")
-    return models[0].get("id", "")
-
-
 def chat(messages, contract, model, cfg):
     """One chat call under a json-schema contract. Returns content, elapsed
     seconds and token usage."""
