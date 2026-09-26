@@ -41,13 +41,26 @@ runs/<run_id>/
 
 ## 安装
 
+需要 Python >= 3.12。本工具从仓库目录直接运行——没有包安装这一步；
+依赖只有 `py7zr` 和 `pyzipper`。
+
+用 [uv](https://docs.astral.sh/uv/)（仓库自带 `uv.lock`）：
+
 ```
-pip install pyzipper py7zr
+uv venv
+uv pip install py7zr pyzipper
+```
+
+或在任意已激活的 Python >= 3.12 环境里用 pip：
+
+```
+pip install py7zr pyzipper
 ```
 
 ## 快速开始
 
 ```
+.venv\Scripts\activate          # Windows（POSIX 用 source .venv/bin/activate）
 python main.py backend
 python main.py scan D:\downloads --workers 4
 ```

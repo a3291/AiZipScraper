@@ -43,13 +43,26 @@ runs/<run_id>/
 
 ## Install
 
+Requires Python >= 3.12. The tool runs from the repository — there is no
+package install; the only dependencies are `py7zr` and `pyzipper`.
+
+With [uv](https://docs.astral.sh/uv/) (the repo ships a `uv.lock`):
+
 ```
-pip install pyzipper py7zr
+uv venv
+uv pip install py7zr pyzipper
+```
+
+Or with pip in any activated Python >= 3.12 environment:
+
+```
+pip install py7zr pyzipper
 ```
 
 ## Quick start
 
 ```
+.venv\Scripts\activate          # Windows (source .venv/bin/activate on POSIX)
 python main.py backend
 python main.py scan D:\downloads --workers 4
 ```
