@@ -7,7 +7,9 @@ run_session(context_pkg, prompts, cfg, mlog, hint_exts)
   identity carries "confidence"; a degraded identity carries
   schema.FALLBACK_KEY and stats["published"] = False.
 Guardrails: max_turns cap (negative = unlimited), one invalid-JSON tolerance,
-page stall → forced publish, 2 more page turns after force → degrade.
+page stall → forced publish, 2 more page turns after force → degrade,
+publish with a non-object identity or missing title/category/summary →
+3 re-input reminders (the first publish does not count) → degrade.
 Chatlog mode (cfg["chatlog"], from --auto-chatlog): remind_at = summary
 trigger (side-call digest); force_publish_at = forced roll without a digest
 (soft boundary: raw messages stay archived in messages.json). A roll re-issues
@@ -36,8 +38,8 @@ REQUIRED_AI_KEYS = ["base_url", "model", "api_key", "temperature", "timeout",
                     "page_chars", "remind_at", "force_publish_at", "max_turns"]
 
 REQUIRED_PROMPT_KEYS = ["system", "first", "remind", "force_publish",
-                        "bad_json_retry", "force_publish_only", "dup_page",
-                        "stall_to_publish", "page_deliver",
+                        "bad_json_retry", "publish_retry", "force_publish_only",
+                        "dup_page", "stall_to_publish", "page_deliver",
                         "chatlog_summarize", "chatlog_roll"]
 
 SUMMARY_MAX_CHARS = 4000   # a longer summary counts as invalid → forced roll
@@ -229,7 +231,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
     mlog.append(messages[1]["role"], messages[1]["content"], "first")
 
     reminded = forced = False
-    forced_retries = bad_json = dupes = 0
+    forced_retries = bad_json = dupes = publish_retries = 0
     read_pages: set[int] = set()
     usage_tokens = 0
     pages = context_pkg["pages"]
@@ -354,7 +356,19 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         if action == "publish":
             ident = out.get("identity")
             if not isinstance(ident, dict):
-                return bail("publish missing identity object")
+                missing = ["identity is not an object"]
+            else:
+                missing = [k for k in ("title", "category", "summary")
+                           if k not in ident]
+            if missing:
+                publish_retries += 1
+                if publish_retries > 3:
+                    return bail(f"publish format invalid after 3 reminders "
+                                f"({'; '.join(missing)})")
+                _say(messages, mlog, R, P, "publish_retry",
+                     P["publish_retry"].format(missing="; ".join(missing),
+                                               attempt_left=4 - publish_retries))
+                continue
             identity, conf, vw = _validate_identity(ident)
             identity["confidence"] = conf
             warnings.extend(vw)

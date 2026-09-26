@@ -4,14 +4,14 @@ English | [简体中文](README.zh-CN.md)
 
 AI-powered scraper for archives and files — identifies what a package *is, what's inside, and what it's for*, and anchors the result next to the file as a sidecar JSON.
 
-Inspired by media library scrapers (like Plex): each package keeps a searchable, verifiable profile next to the file.
+Inspired by media library scrapers (like Plex): each package keeps a searchable, verifiable profile next to the file. On the interaction side, API calls are wrapped by a one-shot plain-text agent; the AI's final result is received through an explicit JSON contract.
 
 ## Features
 
 - **Sampled extraction, original files preserved**: a pluggable extractor samples zip/7z archives into a per-target directory (plain files are copied as-is) — whitelisted text files and notable-named members only, under per-file (256KB), cumulative (4MB) and file-count (8) caps; original files are not modified
 - **Password polling**: passwords live in the extractor's own `password.json`; encrypted archives are tried automatically — the password is not passed on the command line and not written to artifacts
 - **Paged AI identification**: extracted content is packed into sentence-aligned pages with a catalog and a metadata tail page; the AI browses pages through a JSON contract (`read_page` / `publish`)
-- **Context guardrails**: `max_turns` cap (negative = unlimited), near-limit reminder, forced publish at the token ceiling, invalid-JSON tolerance, page-stall detection — failure paths degrade to a flagged `unknown`
+- **Context guardrails**: `max_turns` cap (negative = unlimited), near-limit reminder, forced publish at the token ceiling, invalid-JSON tolerance, publish-format re-input (3 reminders), page-stall detection — failure paths degrade to a flagged `unknown`
 - **Sidecar anchoring**: the result lands in `<name>.publish.json` next to the target, keyed by SHA256 — re-scans skip already-published targets; `check` detects hash drift, low confidence and orphan sidecars
 - **Batch friendly**: concurrent extract + identify pools behind one barrier, per-target failure isolation, full run archives under `runs/`, JSONL export
 
@@ -137,7 +137,7 @@ uv run python scripts/run_logger.py <run_id>
 | `ai.max_turns` | session turn cap; negative (default `-1`) = unlimited — the token ceilings, stall detection and invalid-JSON tolerance still terminate the session |
 | `limits.extract_timeout_s` | per-target extraction time box |
 | `limits.max_text_file_bytes` | files above this size are registered but not read as text |
-| `limits.sentence_max_ratio` | sentences longer than `page_chars × ratio` are skipped whole |
+| `limits.sentence_max_ratio` | sentences longer than `page_chars × ratio` are skipped whole; pages break at sentence ends, a sentence is not split across pages |
 
 Prompts live in `jsons/prompt.json`; the sidecar template in `jsons/publish.json`. Swap config ad hoc with `--config other.json`.
 
@@ -170,7 +170,9 @@ native `output[]` message list — are normalized to the same extracted text;
 
 **Session contract:** the model returns one JSON object per turn —
 `{"action": "read_page", "page": N}` or `{"action": "publish", "identity": {…}}`.
-Guardrails: one invalid-JSON retry; duplicate/nonexistent-page stalls flip into
+Guardrails: one invalid-JSON retry; a publish with a non-object identity or
+missing title/category/summary gets 3 re-input reminders (the first publish
+does not count); duplicate/nonexistent-page stalls flip into
 forced publish; `remind_at` nudges and `force_publish_at` forces at estimated
 token totals (two more page turns after force, then give up); `max_turns` caps
 the session unless negative. Give-up paths end in a flagged `unknown`

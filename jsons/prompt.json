@@ -1,6 +1,6 @@
 {
-  "registry_version": "2.1",
-  "_readme": "Prompt registry: the session engine looks prompts up by key; zero hardcoded copy in code. {page_chars}/{max_turns}/{catalog}/{hint}/{depth}/{tail_page}/{page_no}/{page_text}/{attempt_left}/{roll_no}/{max_rolls}/{summaries_block}/{pages_read}/{page_total} in text are placeholders. summary_contract constrains the chatlog summary side-call.",
+  "registry_version": "2.2",
+  "_readme": "Prompt registry: the session engine looks prompts up by key; zero hardcoded copy in code. {page_chars}/{max_turns}/{catalog}/{hint}/{depth}/{tail_page}/{page_no}/{page_text}/{attempt_left}/{missing}/{roll_no}/{max_rolls}/{summaries_block}/{pages_read}/{page_total} in text are placeholders. summary_contract constrains the chatlog summary side-call.",
   "contract": {
     "name": "archive_control",
     "strict": true,
@@ -60,6 +60,10 @@
     "bad_json_retry": {
       "role": "user",
       "text": "Your previous output was not valid contract JSON ({attempt_left} tolerances left); please output it again."
+    },
+    "publish_retry": {
+      "role": "user",
+      "text": "Your publish output is malformed (identity problem: {missing}). Output the publish action again as one complete JSON object with the full identity (title, category, summary, tags, language, confidence); re-input chances left: {attempt_left}."
     },
     "dup_page": {
       "role": "user",
