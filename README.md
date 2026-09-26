@@ -1,3 +1,5 @@
+English | [简体中文](README.zh-CN.md)
+
 # AiZipScraper
 
 AI-powered scraper for archives and files — identifies what a package *is, what's inside, and what it's for*, and anchors the result next to the file as a sidecar JSON.
