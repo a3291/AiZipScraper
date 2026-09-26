@@ -1,9 +1,0 @@
-{
-  "note": "Reference copy of the _heartbeat.json contract, for reading only; no code loads this file. The writer is scripts/run_extractor.py (_heartbeat function, called by main before extract()).",
-  "filled_by": "every key is auto-produced by the runner; nothing is hand-filled.",
-  "HEARTBEAT_KEYS": {
-    "pid":        { "type": "int", "source": "auto — os.getpid() of the runner subprocess" },
-    "started_at": { "type": "str", "source": "auto — ISO timestamp with local offset, taken at extraction start" }
-  },
-  "lifecycle": "written into the out dir at extraction start, removed after the result contract validates; a leftover file means the extractor hung mid-run, for external observation."
-}
