@@ -8,15 +8,14 @@ fall back to their prompt-publish / force-publish meanings). Every raw message
 is archived with its session number; a fold opens a new session.
 """
 import json
-import threading
 from pathlib import Path
 
 from common import backend, schema
-from common.paths import read_json, write_json
+from common.paths import read_pkgs, update_pkg
 from extractor import context_builder
 
 REQUIRED_AI_KEYS = {
-    "base_url", "model", "api_key", "temperature", "timeout",
+    "base_url", "model", "api_key", "temperature", "timeout", "probe_timeout",
     "page_chars", "remind_at", "force_publish_at", "max_turns",
     "estimate_chunk", "publish_retries",
 }
@@ -27,8 +26,6 @@ REQUIRED_PROMPT_KEYS = {
     "chatlog_summarize_reply", "memo", "memo_deliver", "memo_saved",
     "memo_reject",
 }
-
-_MSG_LOCK = threading.Lock()
 
 
 def load_config(path=None):
@@ -46,42 +43,30 @@ def load_config(path=None):
 
 
 class MessageLog:
-    """Appends every raw message (with its session number) to messages.json and
-    tracks session boundaries in sessions.json."""
+    """Appends every raw message (with its session number) to messages.json;
+    session boundaries live in sessions.json."""
 
     def __init__(self, run_dir, key):
         self.run_dir = Path(run_dir)
         self.key = key
-        self._entries = self._read("messages.json").get("packages", {}).get(key, [])
+        self._entries = read_pkgs(self.run_dir / "messages.json")["packages"].get(key, [])
         self._sessions = (
-            self._read("sessions.json").get("packages", {}).get(key, {"sessions": []})["sessions"]
+            read_pkgs(self.run_dir / "sessions.json")["packages"]
+            .get(key, {"sessions": []})["sessions"]
         )
         self.session = len(self._sessions)
-
-    def _read(self, name):
-        p = self.run_dir / name
-        return read_json(p) if p.exists() else {"packages": {}}
 
     def new_session(self):
         self.session += 1
         self._sessions.append({"no": self.session})
-        self._flush()
+        update_pkg(self.run_dir / "sessions.json", self.key, {"sessions": self._sessions})
 
     def append(self, role, text, prompt_key=None):
         entry = {"session": self.session, "role": role, "text": text}
         if prompt_key:
             entry["prompt_key"] = prompt_key
         self._entries.append(entry)
-        self._flush()
-
-    def _flush(self):
-        with _MSG_LOCK:
-            msg = self._read("messages.json")
-            ses = self._read("sessions.json")
-            msg["packages"][self.key] = self._entries
-            ses["packages"][self.key] = {"sessions": self._sessions}
-            write_json(self.run_dir / "messages.json", msg)
-            write_json(self.run_dir / "sessions.json", ses)
+        update_pkg(self.run_dir / "messages.json", self.key, self._entries)
 
 
 def _estimate_tokens(messages, chunk):
@@ -125,15 +110,10 @@ def run_session(context_pkg, pb, cfg, model, mlog):
     memo_limit = ai["page_chars"]
 
     def _load_memo(run_dir, key):
-        p = Path(run_dir) / "memo.json"
-        doc = read_json(p) if p.exists() else {"packages": {}}
-        return doc["packages"].get(key, {}).get("text", "")
+        return read_pkgs(Path(run_dir) / "memo.json")["packages"].get(key, {}).get("text", "")
 
     def _save_memo(run_dir, key, text):
-        p = Path(run_dir) / "memo.json"
-        doc = read_json(p) if p.exists() else {"packages": {}}
-        doc["packages"][key] = {"text": text}
-        write_json(p, doc)
+        update_pkg(Path(run_dir) / "memo.json", key, {"text": text})
 
     memo_text = _load_memo(mlog.run_dir, mlog.key)
 
@@ -151,6 +131,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
     system = pb.get("system")
     first = pb.get("first", head=pages[0]["text"])
     add = pb.get("add") if pb.has("add") else None
+    open_keys = ["system", "first"] + (["add"] if add else []) + ["chatlog", "memo"]
 
     def chatlog_msg():
         read = ", ".join(str(n) for n in sorted(read_pages)) or "none"
@@ -173,10 +154,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
 
     messages = rebuild()
     mlog.new_session()
-    initial_keys = (
-        ["system", "first"] + (["add"] if add else []) + ["chatlog", "memo"]
-    )
-    for m, key in zip(messages, initial_keys):
+    for m, key in zip(messages, open_keys):
         mlog.append(m["role"], m["content"], key)
 
     def say(msg, key):
@@ -208,10 +186,7 @@ def run_session(context_pkg, pb, cfg, model, mlog):
         reminded = False
         summary_tried = False
         mlog.new_session()
-        roll_keys = (
-            ["system", "first"] + (["add"] if add else []) + ["chatlog", "memo"]
-        )
-        for m, key in zip(messages, roll_keys):
+        for m, key in zip(messages, open_keys):
             mlog.append(m["role"], m["content"], key)
 
     def ask_summary():

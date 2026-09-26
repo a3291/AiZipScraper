@@ -67,6 +67,7 @@ python main.py scan D:\downloads --workers 4
 | ai.api_key | lm-studio | 端点需要时带的 bearer token |
 | ai.temperature | 0.7 | 采样温度 |
 | ai.timeout | 300 | 单次请求超时秒数 |
+| ai.probe_timeout | 10 | 端点探测超时秒数（backend 校验、模型自动解析） |
 | ai.page_chars | 3000 | 每页字符数 |
 | ai.remind_at | 32000 | 水位线：请求总结并折页（到顶则提醒发布） |
 | ai.force_publish_at | 60000 | 水位线：折入原始消息（到顶则强制发布） |
@@ -75,6 +76,7 @@ python main.py scan D:\downloads --workers 4
 | ai.publish_retries | 3 | 强制后格式错误 publish 的重新输入机会数 |
 | limits.extract_timeout_s | 1800 | 提取子进程超时 |
 | limits.sentence_max_ratio | 0.1 | 句长上限占 page_chars 比例（超限整句丢弃） |
+| limits.sniff_bytes | 8192 | 二进制嗅探头部字节数（头部像二进制的文件不可作文本） |
 
 ## 管道（scan）
 
@@ -102,8 +104,9 @@ python main.py scan D:\downloads --workers 4
 - `read_page` — 请求上下文页（第 1 页是目录；元数据页是最后一页）。
   已读页或越界请求停滞进入发布。
 - `read_chatlog` — 请求 chatlog 页；chatlog 页可重复读。
-- `read_memo` / `write_memo` — 读笔记；用 `memo` 字段整文覆盖。非字符串
-  或超长写入以 `memo_reject` 拒绝。
+- `read_memo` / `write_memo` — 读笔记；用 `memo` 字段整文覆盖。笔记按目标
+  存于 `runs/<run_id>/memo.json`，跨 session 与折页保留，上限 `page_chars`；
+  非字符串或超长写入以 `memo_reject` 拒绝。
 - `publish` — 最终 identity。未进入强制状态时格式错误的 publish 直接
   放弃；强制后给 `publish_retries` 次重新输入机会。
 - `help` — 协议复述，随时可调。
@@ -122,7 +125,8 @@ session。`max_turns: -1` 不限次折页；到顶后水位线回落为提醒发
 ## 发布格式
 
 `<目标名>.publish.json` 对应模板：identity（title、category、summary、
-tags、language、confidence）加程序填写的 warnings。发布过不了模板检查的
+tags、language、confidence）加程序填写的 warnings。每份已发布文档同时
+拷贝到 `runs/<run_id>/publish.json`。发布过不了模板检查的
 目标记 `failed`，不写文件。
 
 ## default 提取器

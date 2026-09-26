@@ -9,10 +9,8 @@ state.
 """
 import argparse
 import copy
-import json
 import multiprocessing
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -20,8 +18,6 @@ from pathlib import Path
 import ai_identify
 from common import backend, paths, prompt_builder, registry, schema
 from extractor import context_builder, run_extractor
-
-_CTX_LOCK = threading.Lock()
 
 
 def _find_targets(path):
@@ -52,14 +48,6 @@ def _publish(pb, target, identity, warnings):
     side = Path(str(target) + ".publish.json")
     paths.write_json(side, doc)
     return side, doc, []
-
-
-def _archive_pkg(run_dir, filename, key, pkg):
-    with _CTX_LOCK:
-        p = Path(run_dir) / filename
-        doc = paths.read_json(p) if p.exists() else {"packages": {}}
-        doc["packages"][key] = pkg
-        paths.write_json(p, doc)
 
 
 def _extract_one(name, target, entry, run_dir, timeout_s):
@@ -114,8 +102,9 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
     out_dir = Path(run_dir) / entry["out_dir"]
     pkg = context_builder.build(
         out_dir, ai["page_chars"], limits["sentence_max_ratio"],
+        limits["sniff_bytes"],
     )
-    _archive_pkg(run_dir, "context.json", entry["key"], pkg)
+    paths.update_pkg(Path(run_dir) / "context.json", entry["key"], pkg)
     mlog = ai_identify.MessageLog(run_dir, entry["key"])
     identity, warns, stats = ai_identify.run_session(pkg, pb, cfg, model, mlog)
     extractor_warns = result.get("warnings", []) if isinstance(result, dict) else []
@@ -125,7 +114,7 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
         registry.update(run_dir, target, state="failed", error="; ".join(problems))
         print(f"  [publish] {entry['key']} FAILED template check: {'; '.join(problems)}")
         return
-    _archive_pkg(run_dir, "publish.json", entry["key"], doc)
+    paths.update_pkg(Path(run_dir) / "publish.json", entry["key"], doc)
     registry.update(run_dir, target, state="published")
     title = identity.get("title") or "(no title)"
     print(
@@ -138,7 +127,7 @@ def _identify_one(pb, cfg, model, target, entry, result, run_dir):
 def cmd_scan(args):
     cfg = ai_identify.load_config(args.config)
     try:
-        model = backend.resolve_model(cfg["ai"])
+        model = backend.resolve_model(cfg["ai"], cfg["ai"]["probe_timeout"])
     except Exception as exc:
         print(f"FAIL backend: {exc}")
         return 1
@@ -196,10 +185,11 @@ def cmd_scan(args):
 def cmd_backend(args):
     cfg = ai_identify.load_config(args.config)
     ai = cfg["ai"]
-    if not backend.endpoint_available(ai):
+    probe = ai["probe_timeout"]
+    if not backend.endpoint_available(ai, probe):
         print(f"FAIL: {backend.endpoint(ai)} unreachable")
         return 1
-    model = backend.resolve_model(ai)
+    model = backend.resolve_model(ai, probe)
     contract = {
         "name": "ping",
         "strict": True,

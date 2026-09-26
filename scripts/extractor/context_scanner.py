@@ -8,7 +8,9 @@ TEXT_EXTS = {
     ".hpp", ".cs", ".go", ".rs", ".rb", ".php", ".sh", ".bat", ".ps1",
     ".sql", ".tex", ".srt", ".ass", ".sub", ".vtt", ".nfo", ".info",
 }
-_SNIFF_BYTES = 8192
+
+
+_PRINTABLE_RATIO = 0.9
 
 
 def looks_binary(head):
@@ -16,16 +18,13 @@ def looks_binary(head):
         return False
     if b"\x00" in head:
         return True
-    sample = head[:4096]
-    if not sample:
-        return False
     printable = sum(
-        b in (9, 10, 13) or 32 <= b < 127 or b >= 128 for b in sample
+        b in (9, 10, 13) or 32 <= b < 127 or b >= 128 for b in head
     )
-    return printable / len(sample) < 0.9
+    return printable / len(head) < _PRINTABLE_RATIO
 
 
-def file_to_text(path):
+def file_to_text(path, sniff_bytes):
     """Return the decoded text of path, or None when the file is not usable
     text (unknown extension, empty, binary, undecodable)."""
     p = Path(path)
@@ -37,7 +36,7 @@ def file_to_text(path):
         return None
     try:
         with p.open("rb") as f:
-            head = f.read(_SNIFF_BYTES)
+            head = f.read(sniff_bytes)
         if looks_binary(head):
             return None
         return p.read_text("utf-8", errors="replace")

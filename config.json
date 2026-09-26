@@ -6,6 +6,7 @@
     "api_key": "lm-studio",
     "temperature": 0.7,
     "timeout": 300,
+    "probe_timeout": 10,
     "page_chars": 3000,
     "remind_at": 32000,
     "force_publish_at": 60000,
@@ -15,6 +16,7 @@
   },
   "limits": {
     "extract_timeout_s": 1800,
-    "sentence_max_ratio": 0.1
+    "sentence_max_ratio": 0.1,
+    "sniff_bytes": 8192
   }
 }

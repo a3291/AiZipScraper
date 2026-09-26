@@ -70,6 +70,7 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
 | ai.api_key | lm-studio | bearer token when the endpoint asks for one |
 | ai.temperature | 0.7 | sampling temperature |
 | ai.timeout | 300 | per-request timeout in seconds |
+| ai.probe_timeout | 10 | endpoint probe timeout in seconds (backend check, model auto-resolve) |
 | ai.page_chars | 3000 | page size in characters |
 | ai.remind_at | 32000 | watermark: ask for a summary and fold (remind when capped) |
 | ai.force_publish_at | 60000 | watermark: fold raw messages (force publish when capped) |
@@ -78,6 +79,7 @@ Recommended: `python main.py scan D:\downloads --extractor default --workers 4`
 | ai.publish_retries | 3 | re-input chances for a malformed publish after force |
 | limits.extract_timeout_s | 1800 | extractor subprocess timeout |
 | limits.sentence_max_ratio | 0.1 | max sentence length as a ratio of page_chars (oversized sentences are dropped whole) |
+| limits.sniff_bytes | 8192 | binary-sniff head size in bytes; a head that looks binary makes the file unusable as text |
 
 ## Pipeline (scan)
 
@@ -112,7 +114,9 @@ The model drives with one JSON action per turn
   publish.
 - `read_chatlog` — request a chatlog page; chatlog pages stay rereadable.
 - `read_memo` / `write_memo` — read the memo; replace it whole with the
-  `memo` field. Oversized or non-string writes are refused with `memo_reject`.
+  `memo` field. The memo is per target at `runs/<run_id>/memo.json`, persists
+  across sessions and folds, and is capped at `page_chars`; non-string or
+  oversized writes are refused with `memo_reject`.
 - `publish` — final identity. A malformed publish before any force gives up;
   after force it gets `publish_retries` re-input chances.
 - `help` — protocol recap, any time.
@@ -134,7 +138,8 @@ content (role persona, payload slots). Contracts live in
 ## Publish format
 
 `<target>.publish.json` mirrors the template: identity (title, category,
-summary, tags, language, confidence) plus program-filled warnings. A target
+summary, tags, language, confidence) plus program-filled warnings. Each
+published document is also copied to `runs/<run_id>/publish.json`. A target
 whose publish fails the template check is marked `failed` and no file is
 written.
 

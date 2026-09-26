@@ -25,14 +25,15 @@ def make_config(**ai_over):
     tmp = Path(tempfile.mkdtemp())
     ai = {
         "base_url": "http://fake", "model": "fake", "api_key": "",
-        "temperature": 0.2, "timeout": 30, "page_chars": 500,
+        "temperature": 0.2, "timeout": 30, "probe_timeout": 5, "page_chars": 500,
         "remind_at": 900000, "force_publish_at": 990000, "max_turns": -1,
         "estimate_chunk": 4, "publish_retries": 3,
     }
     ai.update(ai_over)
     cfg = {"concurrency": 1, "ai": ai, "limits": {
         "extract_timeout_s": 60,
-        "sentence_max_ratio": 0.5}}
+        "sentence_max_ratio": 0.5,
+        "sniff_bytes": 8192}}
     p = tmp / "config.json"
     p.write_text(json.dumps(cfg), "utf-8")
     return p, tmp

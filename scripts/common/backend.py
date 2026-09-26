@@ -21,7 +21,7 @@ def _get(cfg, path, timeout):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def endpoint_available(cfg, timeout=10):
+def endpoint_available(cfg, timeout):
     try:
         _get(cfg, "/models", timeout)
         return True
@@ -29,7 +29,7 @@ def endpoint_available(cfg, timeout=10):
         return False
 
 
-def resolve_model(cfg, timeout=10):
+def resolve_model(cfg, timeout):
     model = cfg.get("model", "")
     if model:
         return model

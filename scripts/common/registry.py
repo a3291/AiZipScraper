@@ -5,9 +5,8 @@ import threading
 import time
 from pathlib import Path
 
-from common.paths import now, read_json, write_json
+from common.paths import append_json_list, now, read_json, write_json
 
-STATES = ("pending", "extracted", "published", "failed", "skipped")
 _LOCK = threading.Lock()
 
 
@@ -87,8 +86,4 @@ def all_targets(run_dir):
 
 
 def log_extractor_run(run_dir, entry):
-    with _LOCK:
-        p = Path(run_dir) / "run.json"
-        doc = read_json(p) if p.exists() else {"runs": []}
-        doc["runs"].append(entry)
-        write_json(p, doc)
+    append_json_list(Path(run_dir) / "run.json", "runs", entry)

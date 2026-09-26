@@ -8,7 +8,7 @@ sentence. File recognition is delegated to context_scanner.
 import os
 from pathlib import Path
 
-from common import paths
+from common.paths import read_pkgs, update_pkg
 from extractor import context_scanner
 
 
@@ -49,15 +49,14 @@ def write_chatlog(run_dir, key, fold_text, page_chars, sentence_max_ratio):
     """Append a folded session to runs/<run_id>/chatlog.json, re-page the
     accumulated document and return its pages."""
     p = Path(run_dir) / "chatlog.json"
-    doc = paths.read_json(p) if p.exists() else {"packages": {}}
-    pkg = doc["packages"].setdefault(key, {"sections": [], "pages": []})
+    pkg = read_pkgs(p)["packages"].setdefault(key, {"sections": [], "pages": []})
     pkg["sections"].append(fold_text)
     pkg["pages"] = paginate("\n".join(pkg["sections"]), page_chars, sentence_max_ratio)
-    paths.write_json(p, doc)
+    update_pkg(p, key, pkg)
     return pkg["pages"]
 
 
-def build(out_dir, page_chars, sentence_max_ratio):
+def build(out_dir, page_chars, sentence_max_ratio, sniff_bytes):
     """Walk out_dir (skipping _-prefixed names), collect text via
     context_scanner, and return {page_chars, pages, stats}; page 1 is the
     catalog, the last page is the extracted-file metadata."""
@@ -73,7 +72,7 @@ def build(out_dir, page_chars, sentence_max_ratio):
             p = Path(root) / name
             rel = p.relative_to(out_dir).as_posix()
             size = p.stat().st_size
-            text = context_scanner.file_to_text(p)
+            text = context_scanner.file_to_text(p, sniff_bytes)
             if text is None:
                 skipped.append((rel, size))
                 continue
@@ -87,12 +86,12 @@ def build(out_dir, page_chars, sentence_max_ratio):
     for rel, _size, _chars in files:
         ext = Path(rel).suffix.lower() or "(none)"
         ext_stats[ext] = ext_stats.get(ext, 0) + 1
-    top_ext = sorted(ext_stats.items(), key=lambda kv: -kv[1])[:30]
+    ext_sorted = sorted(ext_stats.items(), key=lambda kv: -kv[1])
 
     tail_lines = [
         f"text files packed: {len(files)} / {len(files) + len(skipped)}",
         f"usable-text bytes: {sum(s for _, s, _ in files)}",
-        "extensions: " + (", ".join(f"{e} x{n}" for e, n in top_ext) or "(none)"),
+        "extensions: " + (", ".join(f"{e} x{n}" for e, n in ext_sorted) or "(none)"),
     ]
     if files:
         tail_lines.append("files:")
