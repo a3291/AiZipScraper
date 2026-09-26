@@ -1,5 +1,9 @@
-dev/
 test_fixtures/
 .venv/
 __pycache__/
 runs/
+dev/chatlog
+dev/tempcode
+dev/memo.json
+dev/memo.md
+dev/PR.txt

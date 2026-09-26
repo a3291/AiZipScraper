@@ -8,6 +8,13 @@ run_session(context_pkg, prompts, cfg, mlog, hint_exts)
   schema.FALLBACK_KEY and stats["published"] = False.
 Guardrails: max_turns cap (negative = unlimited), one invalid-JSON tolerance,
 page stall → forced publish, 2 more page turns after force → degrade.
+Chatlog mode (cfg["chatlog"], from --auto-chatlog): remind_at = summary
+trigger (side-call digest); force_publish_at = forced roll without a digest
+(soft boundary: raw messages stay archived in messages.json). A roll re-issues
+the opening prompt with the digests and read-progress merged into the
+tail-page section — a context channel parallel to the page context, never a
+dialogue message. max_turns = roll cap (-1 unlimited; once reached the
+watermarks fall back to their original meanings).
 """
 from __future__ import annotations
 
@@ -30,7 +37,10 @@ REQUIRED_AI_KEYS = ["base_url", "model", "api_key", "temperature", "timeout",
 
 REQUIRED_PROMPT_KEYS = ["system", "first", "remind", "force_publish",
                         "bad_json_retry", "force_publish_only", "dup_page",
-                        "stall_to_publish", "page_deliver"]
+                        "stall_to_publish", "page_deliver",
+                        "chatlog_summarize", "chatlog_roll"]
+
+SUMMARY_MAX_CHARS = 4000   # a longer summary counts as invalid → forced roll
 
 
 def load_config(path: str | None = None) -> dict:
@@ -90,7 +100,8 @@ def load_prompts(path: str | None = None) -> dict:
     if missing:
         raise ValueError(f"prompt.json missing prompt keys: {missing} (file {p})")
     roles = {k: v.get("role", "user") for k, v in data["prompts"].items()}
-    return {"contract": contract, "prompts": prompts, "roles": roles}
+    return {"contract": contract, "prompts": prompts, "roles": roles,
+            "summary_contract": data.get("summary_contract")}
 
 
 def _hint_from_extensions(exts: dict[str, int]) -> str:
@@ -130,7 +141,7 @@ def _estimate_tokens(messages: list[dict]) -> int:
 # ---------- messages.json (organized per message, atomic rewrite per turn) ----------
 
 class MessageLog:
-    """Appends re-read, merge and atomically rewrite messages.json under a lock; safe for concurrent instances."""
+    """Re-read, merge and atomically rewrite messages.json under a class-level lock."""
 
     _lock = threading.Lock()   # class-level lock
 
@@ -182,7 +193,8 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
     """Single-package recognition session. Returns (identity, confidence, warnings, stats)."""
     warnings: list[str] = []
     stats = {"pages": context_pkg["stats"]["page_count"], "pages_read": 0,
-             "turns": 0, "tokens_in": 0, "tokens_out": 0, "published": True}
+             "turns": 0, "tokens_in": 0, "tokens_out": 0, "rolls": 0,
+             "published": True}
 
     def bail(reason: str):
         stats["published"] = False
@@ -222,12 +234,95 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
     usage_tokens = 0
     pages = context_pkg["pages"]
 
+    chatlog = bool(cfg.get("chatlog"))
+    rolls = 0
+    summaries: list[str] = []
+    summary_tried = False
+    system_msg = dict(messages[0])
+    sum_contract = prompts.get("summary_contract")
+
+    def roll(forced_roll: bool, summary: str | None) -> None:
+        """Fold the history: re-issue the opening prompt with the digests and
+        read-progress merged into the tail-page section (context channel,
+        parallel to the page context)."""
+        nonlocal rolls, usage_tokens, reminded, summary_tried
+        rolls += 1
+        stats["rolls"] = rolls
+        if not forced_roll and summary:
+            summaries.append(summary)
+        if summaries:
+            block = "\n\n".join(f"===== CHATLOG DIGEST {i + 1} =====\n{s}"
+                                for i, s in enumerate(summaries))
+        else:
+            block = "(no digest was produced for the earlier conversation)"
+        section = P["chatlog_roll"].format(
+            roll_no=rolls, max_rolls=turns_desc, summaries_block=block,
+            pages_read=", ".join(map(str, sorted(read_pages))) or "none",
+            page_total=stats["pages"])
+        messages.clear()
+        messages.extend([
+            dict(system_msg),
+            {"role": R["first"], "content": P["first"].format(
+                depth="full", hint=hint, max_turns=turns_desc,
+                page_chars=cfg["page_chars"],
+                tail_page=tail_text + "\n\n" + section, catalog=catalog)},
+        ])
+        mlog.append(R["chatlog_roll"], section, "chatlog_roll")
+        usage_tokens = 0
+        reminded = False
+        summary_tried = False
+
+    def ask_summary() -> str | None:
+        """Side-call: ask the model to digest the conversation. Returns the
+        summary text, or None when the reply is unusable (raw exchanges stay
+        archived in messages.json)."""
+        prompt = P["chatlog_summarize"]
+        mlog.append(R["chatlog_summarize"], prompt, "chatlog_summarize")
+        try:
+            resp = backend.chat(cfg, messages + [{"role": R["chatlog_summarize"],
+                                                  "content": prompt}],
+                                sum_contract, cfg["timeout"])
+            content = resp["choices"][0]["message"]["content"]
+        except (OSError, KeyError, IndexError) as e:
+            warnings.append(f"chatlog summary request failed: "
+                            f"{type(e).__name__}: {e}")
+            return None
+        mlog.append("assistant", content, "chatlog_summarize_reply")
+        out = _extract_json(content)
+        s = out.get("summary") if isinstance(out, dict) else None
+        if not isinstance(s, str) or not s.strip():
+            warnings.append("chatlog summary invalid; waiting for the forced roll")
+            return None
+        if len(s) > SUMMARY_MAX_CHARS:
+            warnings.append(f"chatlog summary over limit "
+                            f"({len(s)} > {SUMMARY_MAX_CHARS} chars); "
+                            f"waiting for the forced roll")
+            return None
+        return s
+
     turn = 0
-    while cfg["max_turns"] < 0 or turn < cfg["max_turns"]:
+    while chatlog or cfg["max_turns"] < 0 or turn < cfg["max_turns"]:
         turn += 1
         stats["turns"] = turn
         tokens = usage_tokens or _estimate_tokens(messages)
-        if not forced and tokens >= cfg["force_publish_at"]:
+        can_roll = cfg["max_turns"] < 0 or rolls < cfg["max_turns"]
+        if chatlog:
+            if tokens >= cfg["force_publish_at"]:
+                if can_roll:
+                    roll(True, None)          # fold without a summary
+                elif not forced:
+                    _say(messages, mlog, R, P, "force_publish")
+                    forced = True
+            elif tokens >= cfg["remind_at"]:
+                if can_roll and not summary_tried:
+                    summary_tried = True
+                    s = ask_summary()
+                    if s is not None:
+                        roll(False, s)
+                elif not can_roll and not reminded:
+                    _say(messages, mlog, R, P, "remind")
+                    reminded = True
+        elif not forced and tokens >= cfg["force_publish_at"]:
             _say(messages, mlog, R, P, "force_publish")
             forced = True
         elif not reminded and tokens >= cfg["remind_at"]:

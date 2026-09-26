@@ -1,0 +1,31 @@
+{
+  "note": "Reference copy of the _result.json contract, for reading only; no code loads this file. The enforced copy lives in scripts/run_extractor.py (RESULT_REQUIRED_KEYS / STRUCTURE_REQUIRED_KEYS, checked by _validate_result before writing _result.json).",
+  "filled_by": "every key is auto-produced by the extractor's extract() return; the runner validates and writes _result.json but injects nothing, and no key is hand-filled. Human-maintained extractor inputs live in extractors/<name>/password.json (candidates) and extractors/<name>/config.json (scraping policy), not in this contract.",
+  "source_legend": {
+    "input file": "derived from the incoming path itself, before any archive parsing",
+    "full listing": "derived from the complete archive listing (after entry_limit truncation)",
+    "extraction outcome": "derived from what sampling/polling actually did"
+  },
+  "RESULT_REQUIRED_KEYS": {
+    "entry_id":   { "type": "str",  "source": "auto (input file) — sha256[:8] of the incoming file" },
+    "kind":       { "type": "str",  "source": "auto (input file) — archive if the extension is .zip/.7z, else file" },
+    "sha256":     { "type": "str",  "source": "auto (input file) — full hash of the incoming file" },
+    "structure":  { "type": "dict", "source": "auto (full listing) — shape in STRUCTURE_REQUIRED_KEYS below" },
+    "password_found": { "type": "bool", "source": "auto (extraction outcome) — password polling hit a candidate from password.json" },
+    "warnings":   { "type": "list", "source": "auto (extraction outcome) — runtime log: skips, truncations, fallbacks" },
+    "files_kept": { "type": "int",  "source": "auto (extraction outcome) — files written to the out dir (sampled count; 1 for a plain file)" }
+  },
+  "STRUCTURE_REQUIRED_KEYS": {
+    "entry_count":       { "type": "int",  "source": "auto (full listing) — all entries incl. sampled-out ones" },
+    "dir_count":         { "type": "int",  "source": "auto (full listing)" },
+    "total_uncompressed":{ "type": "int",  "source": "auto (full listing) — sum of member sizes" },
+    "top_extensions":    { "type": "dict", "source": "auto (full listing) — extension histogram, top 30" },
+    "top_level_dirs":    { "type": "list", "source": "auto (full listing) — first path segments, top 50" },
+    "notable_files":     { "type": "list", "source": "auto (full listing) — NOTABLE_NAME_RE matches, top 20" },
+    "password_protected":{ "type": "bool", "source": "auto (full listing) — archive encryption flags" },
+    "multi_part":        { "type": "bool", "source": "auto (input file) — SPLIT_VOLUME_RE on the input file name" },
+    "nested_archives":   { "type": "list", "source": "auto (full listing) — .zip/.7z members, top 20" },
+    "exe_present":       { "type": "bool", "source": "auto (full listing) — any EXE_EXTS member" },
+    "macro_docs":        { "type": "bool", "source": "auto (full listing) — any MACRO_DOC_EXTS member" }
+  }
+}

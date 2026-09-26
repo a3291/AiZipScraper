@@ -1,6 +1,6 @@
 {
-  "registry_version": "2.0",
-  "_readme": "Prompt registry: the session engine looks prompts up by key; zero hardcoded copy in code. {page_chars}/{max_turns}/{catalog}/{hint}/{depth}/{tail_page}/{page_no}/{page_text}/{attempt_left} in text are placeholders.",
+  "registry_version": "2.1",
+  "_readme": "Prompt registry: the session engine looks prompts up by key; zero hardcoded copy in code. {page_chars}/{max_turns}/{catalog}/{hint}/{depth}/{tail_page}/{page_no}/{page_text}/{attempt_left}/{roll_no}/{max_rolls}/{summaries_block}/{pages_read}/{page_total} in text are placeholders. summary_contract constrains the chatlog summary side-call.",
   "contract": {
     "name": "archive_control",
     "strict": true,
@@ -68,6 +68,26 @@
     "stall_to_publish": {
       "role": "user",
       "text": "Page-turning has stalled; publish your current conclusion via publish now."
+    },
+    "chatlog_summarize": {
+      "role": "user",
+      "text": "The conversation context is approaching the limit. Summarize the conversation so far as one JSON object with a single key \"summary\": a compact digest covering the pages read and their key information, the current progress toward a conclusion, and the follow-up plan. Keep it under 4000 characters. Output exactly one JSON object."
+    },
+    "chatlog_roll": {
+      "role": "user",
+      "text": "===== Chatlog context · round {roll_no}/{max_rolls} =====\nEarlier conversation, compacted into digests (raw messages archived on disk):\n\n{summaries_block}\n\nPages read so far: {pages_read} of {page_total} total."
+    }
+  },
+  "summary_contract": {
+    "name": "chatlog_summary",
+    "strict": true,
+    "schema": {
+      "type": "object",
+      "properties": {
+        "summary": { "type": "string" }
+      },
+      "required": ["summary"],
+      "additionalProperties": false
     }
   }
 }

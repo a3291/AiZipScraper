@@ -6,7 +6,7 @@
 
 ## 特性
 
-- **完整提取，原件保留**：可插拔的提取器将 zip/7z 解包（或原样复制普通文件）到每目标的独立目录；不修改原文件
+- **抽样提取，原件保留**：可插拔的提取器对 zip/7z 抽样解包（普通文件原样复制）到每目标的独立目录——只取白名单文本与值得注意文件名的成员，受单文件（256KB）、累计（4MB）、文件数（8）上限约束；不修改原文件
 - **密码轮询**：密码由提取器自己的 `password.json` 持有；加密包自动尝试——密码不写入命令行参数与产物文件
 - **分页 AI 识别**：提取内容打包成句对齐的分页，带目录页与元数据尾页；AI 通过 JSON 契约翻页（`read_page` / `publish`）
 - **上下文护栏**：`max_turns` 轮上限（负数 = 无限）、临限提醒、令牌顶格强制发布、非法 JSON 容忍、翻页停滞检测——失败路径降级为带标记的 `unknown`
@@ -26,8 +26,8 @@ main.py ──> cli.py
                               entry_id = sha256[:8]；已有侧车的目标记 skipped）
   环 2  extract_one ── 子进程 ──> run_extractor.py ── 加载 ──> extractors/<name>/
           │                 → runs/<id>/extracted/<entry_id>/ + _result.json
-          │                 （提取器读自己的 password.json；心跳文件起手写、
-          │                  成功删）
+          │                 （提取器读自己的 config.json 与 password.json；
+          │                  心跳文件起手写、成功删）
   环 3  context_builder     只吃 extracted/（跳过下划线前缀文件）
           │                 → context dict；归档进 runs/<id>/context.json
   环 4  ai_identify         吃环 3 的 context dict + prompt.json + scraper.json
@@ -55,6 +55,9 @@ uv sync
 ## 快速上手
 
 ```bash
+# 推荐的 scan 用法：chatlog 滚页 + 发布后清理，单线程，默认提取器，强制全量重刮
+uv run python main.py scan D:/downloads --auto-chatlog --auto-extracted-clean --workers 1 --extractor default --force
+
 # 批量刮削一个目录（已缓存目标自动跳过）
 uv run python main.py scan D:/downloads
 
@@ -66,6 +69,12 @@ uv run python main.py scan D:/downloads --extractor my_extractor
 
 # 强制全量重刮
 uv run python main.py scan D:/downloads --force
+
+# 目标发布成功后立即删除其提取产物（省磁盘；失败目标保留现场）
+uv run python main.py scan D:/downloads --auto-extracted-clean
+
+# AI 会话历史超长时折叠为归档 JSON 总结（语义见 API 交互节）
+uv run python main.py scan D:/downloads --auto-chatlog
 
 # 查看侧车
 uv run python main.py show D:/downloads
@@ -145,6 +154,8 @@ uv run python scripts/run_logger.py <run_id>
 
 **会话契约**：模型每轮返回一个 JSON 对象——`{"action": "read_page", "page": N}` 或 `{"action": "publish", "identity": {…}}`。护栏：非法 JSON 容忍一次；重复页/不存在页的停滞转入强制发布；估算令牌达到 `remind_at` 提醒、达到 `force_publish_at` 强制（强制后再给两轮翻页机会，然后放弃）；`max_turns` 为负数时不设轮上限。放弃路径以带标记的 `unknown` 侧车收尾。
 
+**Chatlog 模式**（`--auto-chatlog`）：历史超过水位线时折叠进与页面 context 平行的上下文通道——`remind_at` 触发总结侧调用，JSON 摘要与已读进度并入重发开卷 prompt 的末尾页段位（对话通道不出现摘要消息；软边界：`messages.json` 逐条保留全部原始消息）；无有效摘要时 `force_publish_at` 直接强制滚页；`max_turns` 换义为滚动次数上限（负数 = 不限），达到后两条水位线恢复上述原意。
+
 ## 侧车格式
 
 每个目标旁生成 `<名称>.publish.json`，写盘前经 `schema.py` 校验，校验不过则不写文件：
@@ -181,14 +192,14 @@ uv run python scripts/run_logger.py <run_id>
 │   ├── schema.py                  # 侧车契约（大类枚举、阈值、校验）
 │   └── paths.py                   # 项目路径常量
 ├── extractors/                    # 提取器目录（可插拔、自包含）
-│   └── default/                   # extractor.py + 自持 password.json
+│   └── default/                   # extractor.py + config.json + 自持 password.json
 ├── jsons/                         # 静态契约层（人编辑、程序读）
 └── runs/                          # 每次 scan 的归档（不入库）
 ```
 
 ## 安全边界
 
-- 成员路径规范化，`..`/绝对路径成员被跳过；总大小（4GB）或条目数（5 万）超限时不解包
+- 成员路径规范化，`..`/绝对路径成员被跳过；抽样提取受单文件（256KB）、累计（4MB）、文件数（8）与条目清单（3 万，截断）上限约束
 - 不执行成员文件、不解析宏；仅读取文本
 - AI 通过 JSON 契约翻页与发布 identity；哈希、结构、锚定等程序侧字段不发给模型
 - 非法输出降级为带标记的 `unknown` 侧车

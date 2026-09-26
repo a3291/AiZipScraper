@@ -1,0 +1,8 @@
+{
+  "max_single_file_bytes": 262144,
+  "max_total_bytes": 4194304,
+  "max_files": 8,
+  "entry_limit": 30000,
+  "max_password_tries": 32,
+  "text_exts": [".txt", ".md", ".rst", ".nfo", ".json", ".xml", ".csv", ".ini", ".cfg", ".yml", ".yaml", ".log", ".toml", ".text"]
+}

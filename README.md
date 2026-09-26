@@ -6,7 +6,7 @@ Inspired by media library scrapers (like Plex): each package keeps a searchable,
 
 ## Features
 
-- **Full extraction, original files preserved**: a pluggable extractor unpacks zip/7z archives (or copies plain files) into a per-target directory; original files are not modified
+- **Sampled extraction, original files preserved**: a pluggable extractor samples zip/7z archives into a per-target directory (plain files are copied as-is) — whitelisted text files and notable-named members only, under per-file (256KB), cumulative (4MB) and file-count (8) caps; original files are not modified
 - **Password polling**: passwords live in the extractor's own `password.json`; encrypted archives are tried automatically — the password is not passed on the command line and not written to artifacts
 - **Paged AI identification**: extracted content is packed into sentence-aligned pages with a catalog and a metadata tail page; the AI browses pages through a JSON contract (`read_page` / `publish`)
 - **Context guardrails**: `max_turns` cap (negative = unlimited), near-limit reminder, forced publish at the token ceiling, invalid-JSON tolerance, page-stall detection — failure paths degrade to a flagged `unknown`
@@ -32,8 +32,9 @@ main.py ──> cli.py
                               existing sidecar is recorded skipped)
   ring 2  extract_one ── subprocess ──> run_extractor.py ── load ──> extractors/<name>/
           │                 → runs/<id>/extracted/<entry_id>/ + _result.json
-          │                 (extractor reads its own password.json; heartbeat
-          │                  file written at start, removed on success)
+          │                 (extractor reads its own config.json and
+          │                  password.json; heartbeat file written at start,
+          │                  removed on success)
   ring 3  context_builder   eats extracted/ only (underscore-prefixed files skipped)
           │                 → context dict; archived into runs/<id>/context.json
   ring 4  ai_identify       eats the ring-3 context dict + prompt.json + scraper.json
@@ -66,6 +67,9 @@ uv sync
 ## Quick start
 
 ```bash
+# Recommended scan invocation: chatlog roll + post-publish cleanup, serial workers, default extractor, full re-scrape
+uv run python main.py scan D:/downloads --auto-chatlog --auto-extracted-clean --workers 1 --extractor default --force
+
 # Batch-scrape a directory (cached targets are skipped automatically)
 uv run python main.py scan D:/downloads
 
@@ -77,6 +81,12 @@ uv run python main.py scan D:/downloads --extractor my_extractor
 
 # Force a full re-scrape
 uv run python main.py scan D:/downloads --force
+
+# Delete each target's extracted files right after it publishes successfully (saves disk; failed targets keep their files)
+uv run python main.py scan D:/downloads --auto-extracted-clean
+
+# Roll the AI session history into archived JSON summaries when it grows (see API interaction)
+uv run python main.py scan D:/downloads --auto-chatlog
 
 # Show sidecars
 uv run python main.py show D:/downloads
@@ -166,6 +176,16 @@ token totals (two more page turns after force, then give up); `max_turns` caps
 the session unless negative. Give-up paths end in a flagged `unknown`
 sidecar.
 
+**Chatlog mode** (`--auto-chatlog`): when the history grows past the
+watermarks it is folded into a context channel parallel to the page context —
+`remind_at` triggers a summary side-call whose JSON digest, together with the
+read progress, is merged into the tail-page section of the re-issued opening
+prompt (the dialogue channel carries no digest messages; soft boundary:
+`messages.json` keeps every raw message); `force_publish_at` rolls without a
+digest when no valid one exists; `max_turns` counts rolls (negative =
+unlimited) and, once reached, the watermarks fall back to their original
+meanings above.
+
 ## Sidecar format
 
 `<name>.publish.json` is created next to every target, validated with `schema.py` before writing; a failed validation writes no file:
@@ -202,14 +222,14 @@ sidecar.
 │   ├── schema.py                  # sidecar contract (category enum, threshold, validation)
 │   └── paths.py                   # project path constants
 ├── extractors/                    # extractor directories (pluggable, self-contained)
-│   └── default/                   # extractor.py + self-held password.json
+│   └── default/                   # extractor.py + config.json + self-held password.json
 ├── jsons/                         # static contract layer (human-edited, program-read)
 └── runs/                          # per-scan archives (not tracked)
 ```
 
 ## Safety boundaries
 
-- Member paths are normalized; `..`/absolute-path members are skipped; extraction stops above the total-size (4GB) and entry-count (50k) caps
+- Member paths are normalized; `..`/absolute-path members are skipped; sampled extraction is bounded by the per-file (256KB), cumulative (4MB), file-count (8) and entry-list (30k, truncated) caps
 - Member files are not executed, macros are not parsed; only text is read
 - The AI reads pages and publishes an identity through the JSON contract; program-side fields (hashes, structure, anchoring) are not sent to the model
 - Invalid AI output degrades to a flagged `unknown` sidecar

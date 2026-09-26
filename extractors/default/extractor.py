@@ -5,10 +5,13 @@ concurrency-safe (each target gets its own out dir).
 Self-contained: depends only on third-party packages in the uv environment,
 does not import project modules; holds its own passwords — read from password.json
 in this directory ({"passwords": ["...", ...]}).
-Behavior is fixed in this script (not wired to config): archives (zip/7z) are
-fully extracted with original files preserved; plain files are copied as-is;
-member paths are normalized and escaping members are skipped; the total-size
-and entry-count caps abort extraction.
+Scraping policy lives in config.json in this directory (missing file or keys
+fall back to the in-code defaults below): archives are sampled, not fully
+extracted — only whitelisted text files and notable-named members land in the
+out dir, bounded by a per-file cap, a cumulative budget and a file-count cap;
+plain files are copied as-is. Member paths are normalized and escaping members
+are skipped; listing above entry_limit is truncated; password polling is
+capped at max_password_tries tries.
 Structure flags (exe_present, macro_docs, nested_archives from the entry list;
 multi_part from the input file name) are computed here.
 Loaded and executed by scripts/run_extractor.py; the result dict lands in
@@ -41,9 +44,26 @@ EXE_EXTS = {".exe", ".com", ".msi", ".bat", ".cmd", ".scr"}
 MACRO_DOC_EXTS = {".docm", ".dotm", ".xlsm", ".xlam", ".pptm", ".ppsm"}
 SPLIT_VOLUME_RE = re.compile(r"\.(zip|7z)\.\d{1,4}$|\.part\d+\.rar$|\.r\d+$", re.I)
 
-# guardrails fixed in-script (not wired to config)
-MAX_TOTAL_UNCOMPRESSED = 4 * 1024 ** 3   # total uncompressed cap: 4GB
-MAX_ENTRIES = 50000                      # entry count cap
+# scraping policy defaults; config.json in this directory overrides these
+DEFAULT_CONFIG = {
+    "max_single_file_bytes": 256 * 1024,   # members over this are skipped
+    "max_total_bytes": 4 * 1024 * 1024,    # cumulative sampling budget
+    "max_files": 8,                        # sampled file count cap
+    "entry_limit": 30000,                  # listing truncated above this
+    "max_password_tries": 32,              # password polling cap per archive
+    "text_exts": [".txt", ".md", ".rst", ".nfo", ".json", ".xml", ".csv",
+                  ".ini", ".cfg", ".yml", ".yaml", ".log", ".toml", ".text"],
+}
+
+
+def load_config() -> dict:
+    cfg = dict(DEFAULT_CONFIG)
+    try:
+        data = json.loads((HERE / "config.json").read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return cfg
+    cfg.update({k: v for k, v in data.items() if k in DEFAULT_CONFIG})
+    return cfg
 
 
 # ---------- self-contained hashing (no external imports) ----------
@@ -80,6 +100,25 @@ def _safe_join(base: Path, name: str) -> Path | None:
     return p if str(p).startswith(str(base.resolve())) else None
 
 
+# ---------- sampling helpers ----------
+
+def _looks_binary(data: bytes) -> bool:
+    if b"\x00" in data:
+        return True
+    text_bytes = bytes(range(0x20, 0x7F)) + b"\n\r\t"
+    sample = data[:1024]
+    if not sample:
+        return False
+    weird = sum(1 for b in sample if b not in text_bytes and b < 0x80)
+    return weird / len(sample) > 0.3
+
+
+def _is_candidate(name: str, text_exts: set[str]) -> bool:
+    """Sampling candidate: whitelisted text extension or notable file name."""
+    return (os.path.splitext(name)[1].lower() in text_exts
+            or bool(NOTABLE_NAME_RE.search(os.path.basename(name))))
+
+
 # ---------- listing stats ----------
 
 def _stats_from_names(names: list[str], total_uncompressed: int,
@@ -113,7 +152,7 @@ def _stats_from_names(names: list[str], total_uncompressed: int,
     }
 
 
-def _list_zip(path: str, log: list[str]) -> dict:
+def _list_zip(path: str, log: list[str], entry_limit: int) -> dict:
     try:
         zf = zipfile.ZipFile(path)
     except zipfile.BadZipFile:
@@ -123,25 +162,34 @@ def _list_zip(path: str, log: list[str]) -> dict:
         zf = pyzipper.AESZipFile(path)
     with zf:
         infos = zf.infolist()
+        if len(infos) > entry_limit:
+            log.append(f"entry count {len(infos)} exceeds entry_limit {entry_limit}; listing truncated")
+            infos = infos[:entry_limit]
         names = [i.filename for i in infos]
         total = sum(i.file_size for i in infos)
         protected = any(i.flag_bits & 0x1 for i in infos)
     return _stats_from_names(names, total, protected)
 
 
-def _list_7z(path: str, log: list[str]) -> dict:
+def _list_7z(path: str, log: list[str], entry_limit: int) -> dict:
     if py7zr is None:
         raise RuntimeError("py7zr not installed; cannot handle 7z")
     with py7zr.SevenZipFile(path) as z:
         names = z.getnames()
-        total = sum(e.uncompressed for e in z.list() if not e.is_directory)
+        sizes = {e.filename: e.uncompressed for e in z.list()}
         protected = z.needs_password()
+    if len(names) > entry_limit:
+        log.append(f"entry count {len(names)} exceeds entry_limit {entry_limit}; listing truncated")
+        names = names[:entry_limit]
+    kept = set(names)
+    total = sum(sz for n, sz in sizes.items() if n in kept and not n.endswith("/"))
     return _stats_from_names(names, total, protected)
 
 
 # ---------- password polling ----------
 
-def poll_zip_password(path: str, passwords: list[str], log: list[str]) -> str | None:
+def poll_zip_password(path: str, passwords: list[str], log: list[str],
+                      max_tries: int) -> str | None:
     if pyzipper is None:
         return None
     try:
@@ -153,7 +201,7 @@ def poll_zip_password(path: str, passwords: list[str], log: list[str]) -> str | 
         if not names:
             return None
         target = names[0]
-        for pw in passwords:
+        for pw in passwords[:max_tries]:
             try:
                 with zf.open(target, pwd=pw.encode("utf-8")) as f:
                     f.read(16)
@@ -164,10 +212,11 @@ def poll_zip_password(path: str, passwords: list[str], log: list[str]) -> str | 
     return None
 
 
-def poll_7z_password(path: str, passwords: list[str], log: list[str]) -> str | None:
+def poll_7z_password(path: str, passwords: list[str], log: list[str],
+                     max_tries: int) -> str | None:
     if py7zr is None:
         return None
-    for pw in passwords:
+    for pw in passwords[:max_tries]:
         try:
             with py7zr.SevenZipFile(path, password=pw) as z:
                 z.read(targets=[z.getnames()[0]])
@@ -182,11 +231,14 @@ def poll_7z_password(path: str, passwords: list[str], log: list[str]) -> str | N
 
 def extract(path: str, out_dir: str | Path,
             passwords: list[str] | None = None) -> dict:
-    """Main entry: any path → extracted/<entry_id>/ + result dict.
+    """Main entry: any path → sampled extracted/<entry_id>/ + result dict.
 
-    Archives: fully extracted (original files preserved); plain files: copied as-is.
+    Archives: sampled into the out dir — whitelisted text / notable-named
+    members only, bounded by the config caps. Plain files: copied as-is.
     Password candidates default to this directory's password.json.
     """
+    cfg = load_config()
+    text_exts = {e.lower() for e in cfg["text_exts"]}
     log: list[str] = []
     passwords = passwords if passwords is not None else load_passwords()
     out = Path(out_dir)
@@ -206,72 +258,86 @@ def extract(path: str, out_dir: str | Path,
                 "structure": st, "password_found": False,
                 "warnings": log, "files_kept": 1}
 
-    # archive
+    # archive: listing stats come from the full (entry-limited) listing
     if ext == ".zip":
-        st = _list_zip(path, log)
+        st = _list_zip(path, log, cfg["entry_limit"])
     else:
         if py7zr is None:
             raise RuntimeError("py7zr not installed; cannot handle 7z")
-        st = _list_7z(path, log)
+        st = _list_7z(path, log, cfg["entry_limit"])
     st["multi_part"] = bool(SPLIT_VOLUME_RE.search(os.path.basename(path)))
-
-    if st["entry_count"] > MAX_ENTRIES:
-        raise ValueError(f"entry count {st['entry_count']} exceeds cap {MAX_ENTRIES}; extraction aborted")
-    if st["total_uncompressed"] > MAX_TOTAL_UNCOMPRESSED:
-        raise ValueError("total uncompressed size exceeds cap; extraction aborted")
 
     password = None
     if st["password_protected"] and passwords:
         poller = poll_zip_password if ext == ".zip" else poll_7z_password
-        password = poller(path, passwords, log)
+        password = poller(path, passwords, log, cfg["max_password_tries"])
     if st["password_protected"] and password is None:
-        log.append("no working password for encrypted archive; extraction aborted (metadata only)")
+        log.append("no working password for encrypted archive; sampling aborted (metadata only)")
         return {"entry_id": sha[:8], "kind": "archive", "sha256": sha,
                 "structure": st, "password_found": False,
                 "warnings": log, "files_kept": 0}
 
     out.mkdir(parents=True, exist_ok=True)
+    budget = cfg["max_total_bytes"]
+    single = cfg["max_single_file_bytes"]
+    cap_files = cfg["max_files"]
     kept = 0
     if ext == ".zip":
         cls = pyzipper.AESZipFile if (password and pyzipper) else zipfile.ZipFile
         with cls(path) as zf:
             for info in zf.infolist():
-                dest = _safe_join(out, info.filename)
-                if dest is None:
-                    log.append(f"escaped member skipped: {info.filename}")
+                if kept >= cap_files or budget <= 0:
+                    break
+                name = info.filename
+                if info.is_dir() or not _is_candidate(name, text_exts):
                     continue
-                if info.is_dir():
-                    dest.mkdir(parents=True, exist_ok=True)
+                dest = _safe_join(out, name)
+                if dest is None:
+                    log.append(f"escaped member skipped: {name}")
+                    continue
+                if info.file_size > single:
+                    log.append(f"member over single-file cap, skipped: {name}")
+                    continue
+                kw = {"pwd": password.encode("utf-8")} if password else {}
+                try:
+                    with zf.open(info, **kw) as src:
+                        data = src.read(single)
+                except Exception as e:
+                    log.append(f"member read failed, skipped: {name}: {type(e).__name__}")
+                    continue
+                if _looks_binary(data):
+                    log.append(f"binary-looking member skipped: {name}")
                     continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                kw = {"pwd": password.encode("utf-8")} if password else {}
-                with zf.open(info, **kw) as src, open(dest, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                dest.write_bytes(data)
+                budget -= len(data)
                 kept += 1
     else:
         with py7zr.SevenZipFile(path, password=password) as z:
-            names = z.getnames()
-            # member-level sanitization: escaping/bad names (".", "..", absolute paths) dropped
-            valid = [n for n in names if _safe_join(out, n) is not None
-                     and _safe_join(out, n) != out.resolve()]
-            skipped = [n for n in names if n not in valid]
-            for n in skipped:
-                log.append(f"escaped member skipped: {n}")
-            try:
-                z.extract(path=out, targets=valid)
-                kept = len(valid)
-            except Exception as e:
-                # bulk blocked by a single bad member: fall back to per-member extraction
-                if len(valid) > 1 and type(e).__name__ == "Bad7zFile":
-                    kept = 0
-                    for n in valid:
-                        try:
-                            z.extract(path=out, targets=[n])
-                            kept += 1
-                        except Exception:
-                            log.append(f"member extraction failed, skipped: {n}")
-                else:
-                    raise
+            candidates = [n for n in z.getnames()
+                          if not n.endswith("/") and _is_candidate(n, text_exts)]
+            for n in candidates:
+                if kept >= cap_files or budget <= 0:
+                    break
+                dest = _safe_join(out, n)
+                if dest is None or dest == out.resolve():
+                    log.append(f"escaped member skipped: {n}")
+                    continue
+                try:
+                    data = z.read(targets=[n])[n].read(single + 1)
+                except Exception as e:
+                    log.append(f"member read failed, skipped: {n}: {type(e).__name__}")
+                    continue
+                if len(data) > single:
+                    log.append(f"member over single-file cap, skipped: {n}")
+                    continue
+                if _looks_binary(data):
+                    log.append(f"binary-looking member skipped: {n}")
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(data)
+                budget -= len(data)
+                kept += 1
 
     return {"entry_id": sha[:8], "kind": "archive", "sha256": sha,
             "structure": st, "password_found": password is not None,

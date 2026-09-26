@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
 import threading
@@ -88,7 +89,7 @@ def _new_pkg_rec(target: Path) -> dict:
         "ai": {"phase": "pending", "published": False},
         "publish": {"phase": "pending", "sidecar": ""},
         "stats": {"pages": 0, "pages_read": 0, "messages": 0, "turns": 0,
-                  "tokens_in": 0, "tokens_out": 0,
+                  "tokens_in": 0, "tokens_out": 0, "rolls": 0,
                   "sentences_skipped": 0, "elapsed_s": 0.0},
     }
 
@@ -175,7 +176,7 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
     pkg["stats"].update(pages=stats["pages"], pages_read=stats["pages_read"],
                         messages=mlog.count(), turns=stats["turns"],
                         tokens_in=stats["tokens_in"],
-                        tokens_out=stats["tokens_out"],
+                        tokens_out=stats["tokens_out"], rolls=stats["rolls"],
                         sentences_skipped=ctx_pkg["stats"]["sentences_skipped"],
                         elapsed_s=round(elapsed, 1))
     _save(cl, run_dir)
@@ -221,7 +222,7 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
 def process_one(target: Path, run_dir: Path,
                 cfg: dict, prompts: dict, cl: dict,
                 extractor_name: str = "default") -> dict:
-    """Full chain for one target (extract → identify → publish); callable directly from scripts/tests."""
+    """Full chain for one target (extract → identify → publish)."""
     ex, err = extract_one(target, run_dir, extractor_name,
                           cfg["limits"]["extract_timeout_s"])
     if err is not None:
@@ -241,7 +242,9 @@ def _save(cl: dict, run_dir: Path) -> None:
 def cmd_scan(args) -> int:
     cfg = load_config(args.config)
     prompts = load_prompts()
-    backend.resolve_endpoint(cfg)   # once per run; sessions below only re-check
+    if args.auto_chatlog:
+        cfg["chatlog"] = True
+    backend.resolve_endpoint(cfg)   # once per run, before the pools
     conc = cfg["concurrency"]
     if args.workers is not None:
         conc = args.workers
@@ -261,7 +264,7 @@ def cmd_scan(args) -> int:
     _save(cl, run_dir)
 
     try:
-        # cached decided before work; cached targets are recorded skipped and summed up by run_logger
+        # cached targets are recorded skipped
         cached_set = {t for t in targets
                       if not args.force
                       and Path(str(t) + ".publish.json").exists()}
@@ -272,7 +275,7 @@ def cmd_scan(args) -> int:
         _save(cl, run_dir)
         work = [t for t in targets if t not in cached_set]
 
-        # extraction (per-target out dir; concurrency-safe)
+        # extraction pool (per-target out dir)
         ex_map: dict[Path, tuple[dict | None, str | None]] = {}
         if work:
             timeout_s = cfg["limits"]["extract_timeout_s"]
@@ -287,7 +290,7 @@ def cmd_scan(args) -> int:
                     pkg["extract"].update(phase=PH_FAIL, detail=err)
             _save(cl, run_dir)
 
-        # identification (same single concurrency value)
+        # identification pool
         id_targets = [t for t in work
                       if not (t in ex_map and ex_map[t][0] is None)]
         if id_targets:
@@ -296,12 +299,19 @@ def cmd_scan(args) -> int:
                                     prompts, cl, ex_map[t][0]): t
                         for t in id_targets}
                 for f in as_completed(futs):
+                    t = futs[f]
                     try:
-                        f.result()
+                        rec = f.result()
                     except Exception as e:
                         # worker crash: print and continue
                         print(f"identify worker crashed: {type(e).__name__}: {e}",
                               file=sys.stderr)
+                        continue
+                    # remove the extracted files of published targets
+                    if args.auto_extracted_clean and rec["outcome"] == "ok":
+                        entry_id = ex_map[t][0]["entry_id"]
+                        shutil.rmtree(run_dir / "extracted" / entry_id,
+                                      ignore_errors=True)
     except KeyboardInterrupt:
         cl["status"] = "interrupted"
         _save(cl, run_dir)
@@ -433,6 +443,12 @@ def main(argv: list[str] | None = None) -> int:
                    help="extractor name (directory or file under extractors/, default: default)")
     p.add_argument("--no-recurse", action="store_true",
                    help="do not recurse into subdirectories")
+    p.add_argument("--auto-extracted-clean", action="store_true",
+                   help="delete runs/<run_id>/extracted/<entry_id>/ after each target publishes successfully")
+    p.add_argument("--auto-chatlog", action="store_true",
+                   help="fold the session history into archived JSON summaries when it grows "
+                        "(remind_at = summary trigger, force_publish_at = forced roll, "
+                        "max_turns = roll cap)")
     p.add_argument("--workers", type=int,
                    help="override concurrency for this run (defaults to scraper.json)")
     p.set_defaults(func=cmd_scan)

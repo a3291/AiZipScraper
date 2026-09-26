@@ -89,10 +89,11 @@ def run_report(run_dir: Path) -> str:
         lines.append(f"  {head}  " + " | ".join(details))
 
         if pages_real or msgs_real or st:
+            rolls = f"  rolls {st.get('rolls', 0)}" if st.get("rolls") else ""
             lines.append(f"    pages {pages_real or st.get('pages', 0)}"
                          f"  messages {msgs_real or st.get('messages', 0)}"
                          f"  tokens {st.get('tokens_in', 0)}/{st.get('tokens_out', 0)}"
-                         f"  turns {st.get('turns', 0)}"
+                         f"  turns {st.get('turns', 0)}{rolls}"
                          f"  sentences_skipped {st.get('sentences_skipped', 0)}"
                          f"  elapsed {st.get('elapsed_s', '?')}s")
 
