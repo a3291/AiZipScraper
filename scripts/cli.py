@@ -163,7 +163,8 @@ def identify_and_publish(target: Path, run_dir: Path, cfg: dict, prompts: dict,
     t0 = datetime.now().astimezone()
     try:
         identity, conf, warnings, stats = run_session(
-            ctx_pkg, prompts, cfg, mlog, hint_exts=ex["structure"]["top_extensions"])
+            ctx_pkg, prompts, cfg, mlog, hint_exts=ex["structure"]["top_extensions"],
+            depth="full" if ex["kind"] == "archive" else "direct")
     except Exception as e:
         pkg["ai"].update(phase=PH_FAIL, detail=f"{type(e).__name__}: {e}")
         rec["outcome"] = "fail-ai"
@@ -305,7 +306,8 @@ def cmd_scan(args) -> int:
         if id_targets:
             with ThreadPoolExecutor(max_workers=conc) as pool:
                 futs = {pool.submit(identify_and_publish, t, run_dir, cfg,
-                                    prompts, cl, ex_map[t][0]): t
+                                    prompts, cl, ex_map[t][0],
+                                    args.extractor): t
                         for t in id_targets}
                 for f in as_completed(futs):
                     t = futs[f]

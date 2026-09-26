@@ -47,6 +47,13 @@ STRUCTURE_REQUIRED_KEYS = {
 }
 
 
+def _type_ok(value, typ) -> bool:
+    """isinstance check that keeps bool from passing as int."""
+    if typ is int and isinstance(value, bool):
+        return False
+    return isinstance(value, typ)
+
+
 def _validate_result(result) -> str | None:
     """Validate the extractor result contract; returns an error description or None."""
     if not isinstance(result, dict):
@@ -54,13 +61,13 @@ def _validate_result(result) -> str | None:
     for key, typ in RESULT_REQUIRED_KEYS.items():
         if key not in result:
             return f"missing required key: {key}"
-        if not isinstance(result[key], typ):
+        if not _type_ok(result[key], typ):
             return f"result key {key} should be {typ.__name__}, got {type(result[key]).__name__}"
     structure = result["structure"]
     for key, typ in STRUCTURE_REQUIRED_KEYS.items():
         if key not in structure:
             return f"missing required structure key: {key}"
-        if not isinstance(structure[key], typ):
+        if not _type_ok(structure[key], typ):
             return (f"structure key {key} should be {typ.__name__}, "
                     f"got {type(structure[key]).__name__}")
     return None

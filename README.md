@@ -10,7 +10,7 @@ Inspired by media library scrapers (like Plex): each package keeps a searchable,
 
 - **Sampled extraction, original files preserved**: a pluggable extractor samples zip/7z archives into a per-target directory (plain files are copied as-is) — whitelisted text files and notable-named members only, under per-file (256KB), cumulative (4MB) and file-count (8) caps; original files are not modified
 - **Password polling**: passwords live in the extractor's own `password.json`; encrypted archives are tried automatically — the password is not passed on the command line and not written to artifacts
-- **Paged AI identification**: extracted content is packed into sentence-aligned pages with a catalog and a metadata tail page; the AI browses pages through a JSON contract (`read_page` / `publish`)
+- **Paged AI identification**: extracted content is packed into sentence-aligned pages with a catalog and a metadata tail page; the AI browses pages through a JSON contract (`read_page` / `publish` / `help`)
 - **Context guardrails**: `max_turns` cap (negative = unlimited), near-limit reminder, forced publish at the token ceiling, invalid-JSON tolerance, publish-format re-input (3 reminders), page-stall detection — failure paths degrade to a flagged `unknown`
 - **Sidecar anchoring**: the result lands in `<name>.publish.json` next to the target, keyed by SHA256 — re-scans skip already-published targets; `check` detects hash drift, low confidence and orphan sidecars
 - **Batch friendly**: concurrent extract + identify pools behind one barrier, per-target failure isolation, full run archives under `runs/`, JSONL export
@@ -170,7 +170,9 @@ native `output[]` message list — are normalized to the same extracted text;
 `usage` counts are kept when present and feed the token guardrails.
 
 **Session contract:** the model returns one JSON object per turn —
-`{"action": "read_page", "page": N}` or `{"action": "publish", "identity": {…}}`.
+`{"action": "read_page", "page": N}`, `{"action": "publish", "identity": {…}}`,
+or `{"action": "help"}` (protocol recap on demand, unlimited; each call costs a
+turn, prompt key `help` in the extractor's prompt.json).
 Guardrails: one invalid-JSON retry; a publish with a non-object identity or
 missing title/category/summary gets 3 re-input reminders (the first publish
 does not count); duplicate/nonexistent-page stalls flip into

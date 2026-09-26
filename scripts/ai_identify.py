@@ -10,6 +10,8 @@ Guardrails: max_turns cap (negative = unlimited), one invalid-JSON tolerance,
 page stall → forced publish, 2 more page turns after force → degrade,
 publish with a non-object identity or missing title/category/summary →
 3 re-input reminders (the first publish does not count) → degrade.
+The model may request the protocol recap at any time via action "help"
+(unlimited; each call costs a turn, token ceilings still apply).
 Chatlog mode (cfg["chatlog"], from --auto-chatlog): remind_at = summary
 trigger (side-call digest); force_publish_at = forced roll without a digest
 (soft boundary: raw messages stay archived in messages.json). A roll re-issues
@@ -39,8 +41,9 @@ REQUIRED_AI_KEYS = ["base_url", "model", "api_key", "temperature", "timeout",
                     "page_chars", "remind_at", "force_publish_at", "max_turns"]
 
 REQUIRED_PROMPT_KEYS = ["system", "first", "remind", "force_publish",
-                        "bad_json_retry", "publish_retry", "force_publish_only",
-                        "dup_page", "stall_to_publish", "page_deliver",
+                        "bad_json_retry", "publish_retry", "help",
+                        "force_publish_only", "dup_page",
+                        "stall_to_publish", "page_deliver",
                         "chatlog_summarize", "chatlog_roll"]
 
 SUMMARY_MAX_CHARS = 4000   # a longer summary counts as invalid → forced roll
@@ -195,6 +198,7 @@ def _say(messages: list[dict], mlog: "MessageLog", R: dict, P: dict,
 
 def run_session(context_pkg: dict, prompts: dict, cfg: dict,
                 mlog: MessageLog, hint_exts: dict[str, int] | None = None,
+                depth: str = "full",
                 ) -> tuple[dict, float, list[str], dict]:
     """Single-package recognition session. Returns (identity, confidence, warnings, stats)."""
     warnings: list[str] = []
@@ -227,7 +231,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
     messages: list[dict] = [
         {"role": R["system"], "content": P["system"]},
         {"role": R["first"], "content": P["first"].format(
-            depth="full", hint=hint, max_turns=turns_desc,
+            depth=depth, hint=hint, max_turns=turns_desc,
             page_chars=cfg["page_chars"], tail_page=tail_text,
             catalog=catalog)},
     ]
@@ -269,7 +273,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         messages.extend([
             dict(system_msg),
             {"role": R["first"], "content": P["first"].format(
-                depth="full", hint=hint, max_turns=turns_desc,
+                depth=depth, hint=hint, max_turns=turns_desc,
                 page_chars=cfg["page_chars"],
                 tail_page=tail_text + "\n\n" + section, catalog=catalog)},
         ])
@@ -348,7 +352,7 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
         mlog.append("assistant", content)
 
         out = _extract_json(content)
-        if out is None or out.get("action") not in ("read_page", "publish"):
+        if out is None or out.get("action") not in ("read_page", "publish", "help"):
             bad_json += 1
             if bad_json > 1:
                 return bail(f"invalid control JSON from AI ({bad_json} times)")
@@ -356,6 +360,11 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
                  P["bad_json_retry"].format(attempt_left=2 - bad_json))
             continue
         action = out["action"]
+
+        if action == "help":
+            _say(messages, mlog, R, P, "help",
+                 P["help"].format(page_total=stats["pages"]))
+            continue
 
         if action == "publish":
             ident = out.get("identity")
@@ -380,7 +389,8 @@ def run_session(context_pkg: dict, prompts: dict, cfg: dict,
 
         # read_page
         page = out.get("page")
-        valid = isinstance(page, int) and 1 <= page <= len(pages)
+        valid = isinstance(page, int) and not isinstance(page, bool) \
+            and 1 <= page <= len(pages)
         if forced:
             forced_retries += 1
             if forced_retries > 2:

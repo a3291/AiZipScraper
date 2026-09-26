@@ -10,7 +10,7 @@
 
 - **抽样提取，原件保留**：可插拔的提取器对 zip/7z 抽样解包（普通文件原样复制）到每目标的独立目录——只取白名单文本与值得注意文件名的成员，受单文件（256KB）、累计（4MB）、文件数（8）上限约束；不修改原文件
 - **密码轮询**：密码由提取器自己的 `password.json` 持有；加密包自动尝试——密码不写入命令行参数与产物文件
-- **分页 AI 识别**：提取内容打包成句对齐的分页，带目录页与元数据尾页；AI 通过 JSON 契约翻页（`read_page` / `publish`）
+- **分页 AI 识别**：提取内容打包成句对齐的分页，带目录页与元数据尾页；AI 通过 JSON 契约翻页（`read_page` / `publish` / `help`）
 - **上下文护栏**：`max_turns` 轮上限（负数 = 无限）、临限提醒、令牌顶格强制发布、非法 JSON 容忍、publish 格式重输（3 次提醒）、翻页停滞检测——失败路径降级为带标记的 `unknown`
 - **侧车锚定**：结果落在目标旁的 `<名称>.publish.json`，以 SHA256 为主锚——重扫时已发布目标自动跳过；`check` 检测哈希漂移、低置信与孤儿侧车
 - **批量友好**：并发提取池与识别池隔一道栅栏，单目标失败隔离，`runs/` 下全量 run 归档，支持 JSONL 导出
@@ -154,7 +154,7 @@ uv run python scripts/run_logger.py <run_id>
 
 **响应**：OpenAI 的 `choices[0].message.content` 与原生的 `output[]` 消息列表两种形状都归一化为同一提取文本；`usage` 计数在存在时保留，供令牌护栏使用。
 
-**会话契约**：模型每轮返回一个 JSON 对象——`{"action": "read_page", "page": N}` 或 `{"action": "publish", "identity": {…}}`。护栏：非法 JSON 容忍一次；publish 的 identity 非对象或缺 `title`/`category`/`summary` 键给 3 次提醒重输（首次 publish 不计，用尽放弃）；重复页/不存在页的停滞转入强制发布；估算令牌达到 `remind_at` 提醒、达到 `force_publish_at` 强制（强制后再给两轮翻页机会，然后放弃）；`max_turns` 为负数时不设轮上限。放弃路径以带标记的 `unknown` 侧车收尾。
+**会话契约**：模型每轮返回一个 JSON 对象——`{"action": "read_page", "page": N}`、`{"action": "publish", "identity": {…}}` 或 `{"action": "help"}`（按需请求协议复述，无次数上限，每次消耗一轮；提取器 prompt.json 的 `help` 键）。护栏：非法 JSON 容忍一次；publish 的 identity 非对象或缺 `title`/`category`/`summary` 键给 3 次提醒重输（首次 publish 不计，用尽放弃）；重复页/不存在页的停滞转入强制发布；估算令牌达到 `remind_at` 提醒、达到 `force_publish_at` 强制（强制后再给两轮翻页机会，然后放弃）；`max_turns` 为负数时不设轮上限。放弃路径以带标记的 `unknown` 侧车收尾。
 
 **Chatlog 模式**（`--auto-chatlog`）：历史超过水位线时折叠进与页面 context 平行的上下文通道——`remind_at` 触发总结侧调用，JSON 摘要与已读进度并入重发开卷 prompt 的末尾页段位（对话通道不出现摘要消息；软边界：`messages.json` 逐条保留全部原始消息）；无有效摘要时 `force_publish_at` 直接强制滚页；`max_turns` 换义为滚动次数上限（负数 = 不限），达到后两条水位线恢复上述原意。
 
