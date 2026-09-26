@@ -67,8 +67,8 @@ uv sync
 ## Quick start
 
 ```bash
-# Recommended scan invocation: chatlog roll + post-publish cleanup, serial workers, default extractor, full re-scrape
-uv run python main.py scan D:/downloads --auto-chatlog --auto-extracted-clean --workers 1 --extractor default --force
+# Recommended scan invocation: config from jsons/scraper.json + chatlog roll + post-publish cleanup, serial workers, default extractor, full re-scrape
+uv run python main.py scan D:/downloads --config jsons/scraper.json --auto-chatlog --auto-extracted-clean --workers 1 --extractor default --force
 
 # Batch-scrape a directory (cached targets are skipped automatically)
 uv run python main.py scan D:/downloads

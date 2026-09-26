@@ -55,8 +55,8 @@ uv sync
 ## 快速上手
 
 ```bash
-# 推荐的 scan 用法：chatlog 滚页 + 发布后清理，单线程，默认提取器，强制全量重刮
-uv run python main.py scan D:/downloads --auto-chatlog --auto-extracted-clean --workers 1 --extractor default --force
+# 推荐的 scan 用法：配置取自 jsons/scraper.json + chatlog 滚页 + 发布后清理，单线程，默认提取器，强制全量重刮
+uv run python main.py scan D:/downloads --config jsons/scraper.json --auto-chatlog --auto-extracted-clean --workers 1 --extractor default --force
 
 # 批量刮削一个目录（已缓存目标自动跳过）
 uv run python main.py scan D:/downloads
